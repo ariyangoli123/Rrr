@@ -1,0 +1,24 @@
+# A reproducible experiment.  Run it with:
+#   bloodsed compare --scenario examples/scenario.yaml --out results
+title: inflamed sample in three tube shapes
+
+blood:
+  preset: inflammation      # large rouleaux, moderate hematocrit
+  hematocrit: 0.38
+
+config:
+  duration_h: 2.0
+  n_cells: 700
+  sample_interval_s: 60
+  flux_law: hindered-packing
+  boycott:
+    model: pnk
+    efficiency: 0.08
+
+compare:
+  - westergren
+  - spec: "cone:L=200,Dbot=1.2,Dtop=4"
+    label: funnel bottom
+  - preset: westergren
+    tilt_deg: 3
+    label: Westergren, 3 deg tilt
