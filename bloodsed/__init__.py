@@ -15,9 +15,17 @@ __version__ = "0.1.0"
 from .blood import PRESETS as BLOOD_PRESETS, BloodProperties, get_blood
 from .config import Scenario, blood_from_dict, geometry_from_dict, simconfig_from_dict
 from .flux import FLUX_LAWS, FluxLaw, make_flux_law
+from .flows import (
+    cell_flux,
+    peak_velocities,
+    plasma_throughput,
+    velocity_field,
+    velocity_field_mm_per_hour,
+)
 from .geometry import (
     GEOMETRY_SETS,
     PRESETS as GEOMETRY_PRESETS,
+    AnnularCone,
     Bulb,
     Cone,
     Cylinder,
@@ -40,6 +48,7 @@ __all__ = [
     "BLOOD_PRESETS",
     "get_blood",
     "TubeGeometry",
+    "AnnularCone",
     "Cylinder",
     "Taper",
     "Cone",
@@ -56,6 +65,11 @@ __all__ = [
     "FLUX_LAWS",
     "make_flux_law",
     "BoycottModel",
+    "velocity_field",
+    "velocity_field_mm_per_hour",
+    "cell_flux",
+    "plasma_throughput",
+    "peak_velocities",
     "SimulationConfig",
     "SimulationResult",
     "simulate",

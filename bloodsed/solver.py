@@ -137,6 +137,8 @@ class SimulationResult:
     aggregation: np.ndarray      # rouleaux ramp per sample [-]
     fill_height: float           # [m]
     stokes_velocity: float       # [m/s]
+    wall_factors: np.ndarray     # Faxen retardation at cell centres [-]
+    law: FluxLaw                 # the hindered settling law that was used
     mass_error: float            # relative drift in total cell volume
     n_steps: int
     wall_clock_s: float
@@ -249,7 +251,8 @@ def simulate(geometry: TubeGeometry,
     # --- per-face settling velocity ------------------------------------
     u0 = blood.stokes_velocity()
     if config.wall_correction:
-        u_face = u0 * wall_factor(blood.aggregate_diameter, geometry.diameter(z_faces))
+        u_face = u0 * wall_factor(blood.aggregate_diameter,
+                                  geometry.hydraulic_diameter(z_faces))
     else:
         u_face = np.full(n + 1, u0)
     u_face_int = u_face[1:-1]                     # interior faces only
@@ -293,7 +296,10 @@ def simulate(geometry: TubeGeometry,
 
     record(0, 1.0, blood.aggregation_factor(0.0) if config.aggregation_lag else 1.0)
 
-    if geometry.tilt_deg == 0.0 or config.boycott.model in ("none", "constant"):
+    # a straight upright tube has a constant enhancement; a cone does not,
+    # because its inclined walls enter the column as the boundary descends
+    has_walls = config.boycott.walls and geometry.wall_projection(0.0, geometry.length) > 0.0
+    if config.boycott.model in ("none", "constant") or (geometry.tilt_deg == 0.0 and not has_walls):
         fixed_lambda: float | None = config.boycott.factor(geometry.tilt_deg, 0.0, 1.0)
     else:
         fixed_lambda = None
@@ -314,7 +320,13 @@ def simulate(geometry: TubeGeometry,
             top = read_interface()
             bottom = _crossing_height(z_centers, phi, sed_threshold, fill_height, default=0.0)
             gap = geometry.mean_diameter(bottom, max(top, bottom + 1e-6))
-            lam = config.boycott.factor(geometry.tilt_deg, max(top - bottom, 0.0), gap)
+            lam = config.boycott.factor(
+                geometry.tilt_deg,
+                max(top - bottom, 0.0),
+                gap,
+                wall_projection=geometry.wall_projection(bottom, top),
+                area=float(geometry.area(top)),
+            )
 
         dt = min(max_dt, target - t)
         agg_end = blood.aggregation_factor(t + dt) if config.aggregation_lag else 1.0
@@ -372,6 +384,8 @@ def simulate(geometry: TubeGeometry,
         aggregation=agg_hist,
         fill_height=fill_height,
         stokes_velocity=u0,
+        wall_factors=0.5 * (u_face[:-1] + u_face[1:]) / u0,
+        law=law,
         mass_error=mass_error,
         n_steps=steps,
         wall_clock_s=time.perf_counter() - started,

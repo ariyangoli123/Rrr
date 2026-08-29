@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+import numpy as np
 from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
@@ -44,6 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  bloodsed compare shapes --out results\n"
             "  bloodsed compare westergren,westergren:tilt=3,westergren:tilt=15\n"
             "  bloodsed sweep hematocrit 0.2,0.3,0.45,0.55,0.65 --out results\n"
+            "  bloodsed run annular-cone --flow --out results\n"
+            "  bloodsed compare annular --out results\n"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -57,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "(default: westergren)")
     _add_common(run)
     run.add_argument("--animate", action="store_true", help="also write an animated GIF")
+    run.add_argument("--flow", action="store_true",
+                     help="also write the flow field: phase velocities and tracer arrows")
     run.set_defaults(func=cmd_run)
 
     compare = sub.add_parser("compare", help="simulate several tubes and compare them")
@@ -248,6 +254,7 @@ def cmd_list(args) -> int:
     print("  hourglass:L=200,Dend=4,Dthroat=1,at=0.5")
     print("  bulb:L=200,D=2.5,Dbulge=6,pos=0.5,width=0.1")
     print("  stepped:20x1,180x3              stacked sections, length x diameter")
+    print("  annulus:L=150,D=6,angle=15,gap=2  cone inside a cone, blood in the gap")
     print("  any of the above plus ',tilt=3' to incline the tube")
     return 0
 
@@ -267,6 +274,21 @@ def cmd_run(args) -> int:
         print(f"blood: {blood.describe()}")
     results = _run_all(geometries, blood, config, args.quiet)
     _report(results, args, title=results[0].label, comparison=False)
+
+    if args.flow and args.out:
+        from . import plotting
+        from .flows import peak_velocities
+
+        index = int(np.argmin(np.abs(results[0].times - 3600.0)))
+        path = plotting.save(plotting.flow_report(results[0], index),
+                             Path(args.out) / f"flow_{_slug(results[0].label)}.png")
+        flow = peak_velocities(results[0], index)
+        print(f"flow at {flow['time_min']:.0f} min: cells {flow['cells_max_mm_per_h']:.1f} mm/h, "
+              f"plasma {flow['plasma_max_mm_per_h']:.1f} mm/h, "
+              f"Boycott x{flow['enhancement']:.2f}")
+        print(f"wrote {path}")
+    elif args.flow:
+        print("--flow needs --out DIR", file=sys.stderr)
 
     if args.animate and args.out:
         from . import plotting

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from bloodsed.blood import BloodProperties, get_blood
 from bloodsed.geometry import get_geometry
+from bloodsed.flows import peak_velocities
 from bloodsed.metrics import sediment_height_mm
 from bloodsed.solver import SimulationConfig, simulate
 
@@ -29,6 +30,11 @@ CASES = [
     ("westergren", "normal", 3.0),
     ("westergren", "normal", 15.0),
     ("hourglass", "inflammation", 15.0),
+    ("annular-straight", "normal", 0.0),
+    ("annular-cone", "normal", 0.0),
+    ("annular-steep", "normal", 0.0),
+    ("annular-narrow", "normal", 0.0),
+    ("annular-cone", "inflammation", 10.0),
 ]
 
 N_CELLS = 400
@@ -43,6 +49,7 @@ def main() -> None:
         blood = get_blood(blood_name)
         result = simulate(geometry, blood,
                           SimulationConfig(duration_h=DURATION_H, n_cells=N_CELLS))
+        flow = peak_velocities(result, 60)
         fixtures.append({
             "geometry": geometry_name,
             "blood": blood_name,
@@ -51,6 +58,9 @@ def main() -> None:
             "esr_2h": result.esr(2.0),
             "sediment_mm": sediment_height_mm(result),
             "mass_error": result.mass_error,
+            "cells_max_mm_per_h": flow["cells_max_mm_per_h"],
+            "plasma_max_mm_per_h": flow["plasma_max_mm_per_h"],
+            "enhancement": flow["enhancement"],
         })
         print(f"{geometry_name:16s} {blood_name:20s} tilt {tilt:4.1f} -> "
               f"{result.esr(1.0):7.3f} / {result.esr(2.0):7.3f} mm")

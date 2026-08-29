@@ -16,6 +16,7 @@ labels and a printed summary table as its contrast relief.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -89,33 +90,102 @@ def _tidy(ax) -> None:
 
 
 # -- tube drawing ------------------------------------------------------
+def _rotate(x, y, x0, y0, tilt_deg):
+    """Rotate drawing coordinates about the foot of the tube.
+
+    Only meaningful when the two axes share a unit and the axes aspect is equal
+    -- otherwise a rotation shears.  Use ``exaggeration`` mode for that.
+    """
+    if not tilt_deg:
+        return np.asarray(x), np.asarray(y)
+    angle = math.radians(tilt_deg)
+    cos, sin = math.cos(angle), math.sin(angle)
+    dx, dy = np.asarray(x) - x0, np.asarray(y) - y0
+    return x0 + dx * cos - dy * sin, y0 + dx * sin + dy * cos
+
+
+def tube_exaggeration(geometry: TubeGeometry, fraction: float = 0.30) -> float:
+    """How much to widen a tube so its shape is visible beside its height.
+
+    A 2.5 mm bore next to a 200 mm column is a hairline.  This returns the
+    factor that makes the widest part span ``fraction`` of the tube's height,
+    so both axes can stay in millimetres and a tilt can be a true rotation.
+    """
+    z = np.linspace(0.0, geometry.length, 200)
+    widest = 2.0 * float(geometry.radius(z).max())
+    return fraction * geometry.length / max(widest, 1e-9)
+
+
 def draw_tube(ax, geometry: TubeGeometry, phi: np.ndarray | None = None,
               z_faces: np.ndarray | None = None, *, x_center: float = 0.0,
               half_width: float = 0.45, vmax: float = 0.9,
-              outline: str = MUTED) -> None:
+              outline: str = MUTED, tilt: bool = False,
+              exaggeration: float | None = None,
+              min_band: float = 0.03) -> None:
     """Draw one tube, optionally filled with a concentration profile.
 
-    The radius is scaled so the widest tube in the figure spans
-    ``2 * half_width`` in axes units -- a 2.5 mm bore beside a 200 mm column is
-    otherwise invisible.  Heights stay in millimetres.
+    Two coordinate modes:
+
+    * default -- the widest part of the tube spans ``2 * half_width`` in
+      whatever units the axes already use.  Good for putting several tubes side
+      by side; cannot be tilted, because the axes do not share a unit.
+    * ``exaggeration`` -- both axes are millimetres, with the radius multiplied
+      by that factor.  Set ``ax.set_aspect("equal")`` and a tilt becomes a true
+      rotation, which is the only way the Boycott effect looks like itself.
+
+    A tube with an inner core (an annular settler) is drawn as two walls with
+    the blood in the gap between them.  A real annular gap is a millimetre
+    inside a vessel tens of millimetres across, so the band is widened inward to
+    at least ``min_band`` of the tube's height -- the outer wall stays true.
     """
     if z_faces is None:
         n = 400 if phi is None else len(phi) + 1
         z_faces = np.linspace(0.0, geometry.length, n)
-    r = geometry.radius(z_faces)
-    r_scaled = half_width * r / r.max()
+    outer = geometry.radius(z_faces)
+    inner = geometry.inner_radius(z_faces)
     z_mm = z_faces / MM
 
-    if phi is not None:
-        x = np.column_stack([x_center - r_scaled, x_center + r_scaled])
-        y = np.column_stack([z_mm, z_mm])
-        ax.pcolormesh(x, y, np.asarray(phi)[:, None], cmap=BLOOD_CMAP,
-                      norm=Normalize(0.0, vmax), shading="flat", rasterized=True)
+    if exaggeration is not None:
+        outer_scaled = exaggeration * outer / MM
+        inner_scaled = exaggeration * inner / MM
+    else:
+        scale = half_width / outer.max()
+        outer_scaled = scale * outer
+        inner_scaled = scale * inner
 
-    ax.plot(x_center - r_scaled, z_mm, color=outline, lw=1.1, solid_joinstyle="round")
-    ax.plot(x_center + r_scaled, z_mm, color=outline, lw=1.1, solid_joinstyle="round")
-    ax.plot([x_center - r_scaled[0], x_center + r_scaled[0]], [z_mm[0], z_mm[0]],
-            color=outline, lw=1.1)
+    annular = bool(np.any(inner_scaled > 0))
+    if annular and min_band > 0:
+        span = z_mm[-1] - z_mm[0] if exaggeration is not None else 2.0 * half_width
+        floor_band = min_band * span
+        thin = (outer_scaled - inner_scaled) < floor_band
+        inner_scaled = np.where(thin, np.maximum(outer_scaled - floor_band, 0.0),
+                                inner_scaled)
+
+    angle = geometry.tilt_deg if tilt else 0.0
+    if angle and exaggeration is None:
+        raise ValueError("tilting needs exaggeration mode so both axes share a unit")
+    foot = (x_center, z_mm[0])
+
+    if phi is not None:
+        values = np.asarray(phi)[:, None]
+        bands = ([(inner_scaled, outer_scaled), (-outer_scaled, -inner_scaled)]
+                 if annular else [(-outer_scaled, outer_scaled)])
+        for lo, hi in bands:
+            x = np.column_stack([x_center + lo, x_center + hi])
+            y = np.column_stack([z_mm, z_mm])
+            xr, yr = _rotate(x, y, *foot, angle)
+            ax.pcolormesh(xr, yr, values, cmap=BLOOD_CMAP, norm=Normalize(0.0, vmax),
+                          shading="flat", rasterized=True)
+
+    walls = [-outer_scaled, outer_scaled]
+    if annular:
+        walls += [-inner_scaled, inner_scaled]
+    for offsets in walls:
+        xr, yr = _rotate(x_center + offsets, z_mm, *foot, angle)
+        ax.plot(xr, yr, color=outline, lw=1.1, solid_joinstyle="round")
+    xr, yr = _rotate(np.array([x_center - outer_scaled[0], x_center + outer_scaled[0]]),
+                     np.array([z_mm[0], z_mm[0]]), *foot, angle)
+    ax.plot(xr, yr, color=outline, lw=1.1)
 
 
 # -- individual panels -------------------------------------------------
@@ -398,6 +468,119 @@ def animate(result: SimulationResult, path: str | Path, *, fps: int = 12,
     anim.save(path, writer=PillowWriter(fps=fps))
     plt.close(fig)
     return path
+
+
+def flow_arrows(ax, result: SimulationResult, index: int = -1, *, x_center: float = 0.0,
+                exaggeration: float = 1.0, rows: int = 12, tilt: bool = False) -> None:
+    """Arrows for the two phases, drawn along gravity rather than along the tube.
+
+    Cells fall vertically whatever angle the tube is at -- that is precisely why
+    tilting one speeds it up -- so the arrows stay vertical while the tube
+    leans.  Lengths are proportional to the local speed, taken straight from the
+    solved field (see :mod:`bloodsed.flows`).
+    """
+    from .flows import velocity_field_mm_per_hour
+
+    geo = result.geometry
+    cells, plasma = velocity_field_mm_per_hour(result, index)
+    fastest = max(float(np.max(plasma)), float(np.max(cells[result.phi[index] > 0.01]))
+                  if np.any(result.phi[index] > 0.01) else 0.0, 1e-9)
+    span = result.fill_height / MM
+    scale = 0.06 * span / fastest
+    angle = geo.tilt_deg if tilt else 0.0
+    foot = (x_center, 0.0)
+
+    for row in range(rows):
+        z = (row + 0.5) * result.fill_height / rows
+        i = int(np.argmin(np.abs(result.z_centers - z)))
+        z_mm = result.z_centers[i] / MM
+        outer = exaggeration * float(geo.radius(z)) / MM
+        inner = exaggeration * float(geo.inner_radius(z)) / MM
+        offset = 0.45 * (outer + inner) if inner > 0 else 0.45 * outer
+        for side, speed, color, direction in (
+            (-offset, min(cells[i], fastest), BLOOD_STEPS[6], -1.0),
+            (offset, plasma[i], "#2f7d9e", 1.0),
+        ):
+            if speed * scale < 0.004 * span:
+                continue
+            x, y = _rotate(np.array([x_center + side]), np.array([z_mm]), *foot, angle)
+            tip_x, tip_y = x[0], y[0] + direction * speed * scale
+            ax.annotate("", xy=(tip_x, tip_y), xytext=(x[0], y[0]),
+                        arrowprops=dict(arrowstyle="-|>", color=color, lw=1.5,
+                                        shrinkA=0, shrinkB=0, mutation_scale=10), zorder=5)
+
+
+def velocity_profile(result: SimulationResult, index: int = -1, ax=None, *,
+                     title: str | None = None):
+    """Speed of each phase against height, in the unit the reading uses.
+
+    The two curves are not independent: nothing leaves the tube, so the plasma
+    displaced by the falling cells has to come back up past them, and
+    ``phi * v_cells = (1 - phi) * v_plasma`` at every height.
+    """
+    from .flows import velocity_field_mm_per_hour
+
+    apply_style()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(5.2, 4.6))
+    _tidy(ax)
+
+    cells, plasma = velocity_field_mm_per_hour(result, index)
+    z = result.z_mm
+    # the speeds span three decades -- a lone cell in the clear plasma falls at
+    # nearly the free Stokes speed, the packed sediment at nothing -- so the
+    # axis is logarithmic rather than dominated by the fast tail
+    floor = 0.05
+    sparse = result.phi[index] < 1e-4
+    ax.plot(np.where(sparse, np.nan, np.maximum(cells, floor)), z,
+            color=BLOOD_STEPS[5], lw=2, label="cells, falling", zorder=3)
+    ax.plot(np.maximum(plasma, floor), z, color="#2f7d9e", lw=2,
+            label="plasma, rising", zorder=3)
+    ax.set_xscale("log")
+    ax.axhline(result.interface_mm[index], color=INK, lw=1.2, ls="--", zorder=2)
+    _halo(ax.annotate("plasma boundary", (ax.get_xlim()[1], result.interface_mm[index]),
+                      xytext=(-4, 5), textcoords="offset points", ha="right",
+                      color=INK, fontsize=8.5, zorder=4))
+    ax.set_xlabel("speed (mm/h)")
+    ax.set_ylabel("height above tube bottom (mm)")
+    ax.set_title(title or f"Flow at {result.times_min[index]:.0f} min")
+    ax.legend(loc="lower right")
+    ax.set_xlim(floor, max(float(np.max(cells)), float(np.max(plasma)), 1.0) * 1.6)
+    return ax
+
+
+def flow_report(result: SimulationResult, index: int = -1):
+    """The tube with its flow field beside the profile that produced it."""
+    apply_style()
+    fig = plt.figure(figsize=(11.0, 5.4), layout="constrained")
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.05, 1.0, 1.15])
+
+    ax_tube = fig.add_subplot(gs[0, 0])
+    _tidy(ax_tube)
+    ax_tube.grid(False)
+    ax_tube.set_aspect("equal")
+    tilt = result.geometry.tilt_deg != 0
+    exaggeration = tube_exaggeration(result.geometry)
+    draw_tube(ax_tube, result.geometry, result.phi[index], result.z_faces,
+              exaggeration=exaggeration, vmax=result.blood.max_packing, tilt=tilt)
+    flow_arrows(ax_tube, result, index, exaggeration=exaggeration, tilt=tilt)
+    span = result.geometry.length / MM
+    lean = math.sin(math.radians(result.geometry.tilt_deg)) * span
+    ax_tube.set_ylim(-0.03 * span, 1.05 * span)
+    ax_tube.set_xlim(-0.25 * span, 0.25 * span + lean)
+    ax_tube.set_xticks([])
+    ax_tube.set_ylabel("height above tube bottom (mm)")
+    ax_tube.set_title(f"{result.times_min[index]:.0f} min")
+    if tilt:
+        _halo(ax_tube.annotate(f"tilted {result.geometry.tilt_deg:g}°",
+                               (0.5, 0.01), xycoords="axes fraction", ha="center",
+                               color=INK_2, fontsize=9))
+
+    velocity_profile(result, index, ax=fig.add_subplot(gs[0, 1]))
+    concentration_map(result, ax=fig.add_subplot(gs[0, 2]))
+    fig.suptitle(f"{result.label} — flow field", color=INK, fontsize=12.5,
+                 fontweight="bold")
+    return fig
 
 
 def save(fig, path: str | Path, *, dpi: int = 150) -> Path:

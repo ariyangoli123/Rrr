@@ -16,8 +16,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
-  BLOOD_PRESETS, cellVolumes, cylinder, esr, getGeometry, makeFluxLaw, simulate,
-  sedimentMm, stokesVelocity, taper, tubeVolume, wallFactor, makeBlood, stepped,
+  BLOOD_PRESETS, annularCone, area, cellVolumes, cylinder, esr, getGeometry,
+  hydraulicDiameter, innerRadius, makeBlood, makeFluxLaw, radius, sedimentMm,
+  simulate, stepped, stokesVelocity, taper, tubeVolume, velocityField,
+  velocityFieldMmPerHour, wallFactor, wallProjection,
 } from './sim.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,8 +49,18 @@ function assert(name, condition) {
 
 // -- agreement with the Python model ----------------------------------
 console.log(`comparing ${fixtures.cases.length} cases against the Python model`);
+const ANNULAR_FIXTURES = {
+  'annular-straight': [120, 8.0, 0.0, 1.5],
+  'annular-cone': [120, 8.0, 12.0, 1.5],
+  'annular-steep': [120, 8.0, 30.0, 1.5],
+  'annular-narrow': [120, 8.0, 12.0, 0.6],
+};
+
 for (const item of fixtures.cases) {
-  const geometry = getGeometry(item.geometry, item.tilt_deg);
+  const spec = ANNULAR_FIXTURES[item.geometry];
+  const geometry = spec
+    ? annularCone(...spec, { tiltDeg: item.tilt_deg, name: item.geometry })
+    : getGeometry(item.geometry, item.tilt_deg);
   const result = simulate(geometry, BLOOD_PRESETS[item.blood], {
     durationH: fixtures.duration_h,
     nCells: fixtures.n_cells,
@@ -59,6 +71,11 @@ for (const item of fixtures.cases) {
   check(`${label} ESR 2 h`, esr(result, 2), item.esr_2h, tolerance);
   check(`${label} sediment`, sedimentMm(result), item.sediment_mm, Math.max(tolerance, 2e-3));
   assert(`${label} conserves cell volume`, result.massError < 1e-12);
+
+  const flow = velocityFieldMmPerHour(result, 60);
+  check(`${label} fastest cells`, Math.max(...flow.cells), item.cells_max_mm_per_h, tolerance);
+  check(`${label} fastest plasma`, Math.max(...flow.plasma), item.plasma_max_mm_per_h, tolerance);
+  check(`${label} enhancement`, result.enhancement[60], item.enhancement, tolerance);
 }
 
 // -- closed-form checks, independent of the fixtures -------------------
@@ -121,6 +138,64 @@ check('hindered velocity at Hct 45 %', law.shape(0.45) / 0.45, (1 - 0.45 / 0.9) 
 assert('wall drag grows as the bore narrows',
   wallFactor(60e-6, 10e-3) > wallFactor(60e-6, 2.5e-3) &&
   wallFactor(60e-6, 2.5e-3) > wallFactor(60e-6, 0.3e-3));
+
+// -- the annular settler ----------------------------------------------
+const annulus = annularCone(100, 12, 30, 2);
+check('annular flow area', area(annulus, 0.05),
+  Math.PI * (radius(annulus, 0.05) ** 2 - innerRadius(annulus, 0.05) ** 2), 1e-12);
+check('gap measured perpendicular to the wall',
+  radius(annulus, 0.03) - innerRadius(annulus, 0.03),
+  (2 * 1e-3) / Math.cos((30 * Math.PI) / 180), 1e-9);
+check('hydraulic diameter is twice the gap',
+  hydraulicDiameter(annularCone(100, 12, 0, 2), 0.05), 2 * 2e-3, 1e-9);
+check('a plain tube reports its bore', hydraulicDiameter(cylinder(100, 2.5), 0.05), 2.5e-3, 1e-12);
+check('a straight tube has no inclined wall', wallProjection(cylinder(200, 2.5), 0, 0.2), 0, 1e-12);
+check('a cone projects the circle it opens out to',
+  wallProjection(taper(200, 1.2, 4.0), 0, 0.2),
+  Math.PI * ((2e-3) ** 2 - (0.6e-3) ** 2), 2e-3);
+
+assert('cones that would meet are rejected', (() => {
+  try { annularCone(100, 10, 8, 1, { innerAngleDeg: 20 }); return false; } catch { return true; }
+})());
+
+const idealAnn = { aggregationTimeS: 0 };
+const annConfig = { durationH: 1, nCells: 300, aggregationLag: false };
+const byAngle = [0, 6, 12, 25].map((a) =>
+  esr(simulate(annularCone(120, 8, a, 1.5), idealAnn, annConfig), 1));
+assert('a steeper cone settles faster', byAngle.every((v, i) => i === 0 || v > byAngle[i - 1]));
+assert('inclining the walls more than doubles the reading', byAngle[3] > 2 * byAngle[0]);
+
+const byGap = [3, 1.5, 0.6].map((g) =>
+  esr(simulate(annularCone(120, 8, 12, g), idealAnn, annConfig), 1));
+assert('a narrower gap clears plasma faster', byGap.every((v, i) => i === 0 || v > byGap[i - 1]));
+
+const wallsOff = esr(simulate(annularCone(120, 8, 12, 1.5), idealAnn,
+  { ...annConfig, boycott: { walls: false } }), 1);
+assert('the wall term can be switched off', byGap[1] > 1.5 * wallsOff);
+check('switching walls off leaves a straight tube alone',
+  esr(simulate(cylinder(200, 2.5), idealAnn, { ...annConfig, boycott: { walls: false } }), 1),
+  esr(simulate(cylinder(200, 2.5), idealAnn, annConfig), 1), 1e-12);
+
+// -- the flow field ---------------------------------------------------
+const flowRun = simulate(cylinder(200, 2.5), {}, { durationH: 2, nCells: 300 });
+const { cells: vCells, plasma: vPlasma } = velocityField(flowRun, 30);
+const phiAt = flowRun.phi[30];
+let worstBalance = 0;
+for (let i = 0; i < phiAt.length; i++) {
+  worstBalance = Math.max(worstBalance,
+    Math.abs(phiAt[i] * vCells[i] - (1 - phiAt[i]) * vPlasma[i]));
+}
+assert('the two phases balance exactly', worstBalance < 1e-15);
+assert('cells fall and plasma rises', vCells.every((v) => v >= 0) && vPlasma.every((v) => v >= 0));
+
+const late = velocityField(flowRun, 60);
+let stillAbove = 0;
+for (let i = 0; i < flowRun.zCenters.length; i++) {
+  if (flowRun.zCenters[i] > flowRun.interface[60] + 5e-3) {
+    stillAbove = Math.max(stillAbove, late.cells[i], late.plasma[i]);
+  }
+}
+assert('nothing moves in the clear plasma', stillAbove < 1e-12);
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) {

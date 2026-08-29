@@ -69,8 +69,13 @@ export function aggregationFactor(blood, t) {
 // ------------------------------------------------------------- geometry
 const CUM_POINTS = 20001;
 
-function makeGeometry({ name, lengthMm, radiusAt, breakpoints = [], tiltDeg = 0, kind }) {
-  return { name, kind, length: lengthMm * MM, tiltDeg, radiusAt, breakpoints, _cum: null };
+function makeGeometry({ name, lengthMm, radiusAt, innerRadiusAt = null,
+                       breakpoints = [], tiltDeg = 0, kind }) {
+  return {
+    name, kind, length: lengthMm * MM, tiltDeg, radiusAt,
+    innerRadiusAt, breakpoints,
+    _cum: null, _wall: null, _hyd: null,
+  };
 }
 
 export function cylinder(lengthMm, diameterMm, opts = {}) {
@@ -130,6 +135,37 @@ export function bulb(lengthMm, diameterMm, bulgeMm, pos = 0.5, width = 0.12, opt
   });
 }
 
+/**
+ * A cone standing inside another cone, with the blood filling the gap: a
+ * lamella settler. Every wall is inclined, so cells fall only the width of the
+ * gap before landing on the outer cone, and clear plasma is released under the
+ * inner one -- the Boycott effect without tilting anything.
+ */
+export function annularCone(lengthMm, bottomDiameterMm, angleDeg, gapMm, opts = {}) {
+  const length = lengthMm * MM;
+  const r0 = 0.5 * bottomDiameterMm * MM;
+  const slope = Math.tan((angleDeg * Math.PI) / 180);
+  const innerSlope = Math.tan((((opts.innerAngleDeg ?? angleDeg)) * Math.PI) / 180);
+  const radialGap = (gapMm * MM) / Math.cos((angleDeg * Math.PI) / 180);
+  const geo = makeGeometry({
+    kind: 'annular',
+    name: opts.name ?? `annular ${angleDeg}° / ${gapMm} mm`,
+    lengthMm,
+    tiltDeg: opts.tiltDeg ?? 0,
+    radiusAt: (z) => r0 + slope * z,
+    innerRadiusAt: (z) => Math.max(r0 - radialGap + innerSlope * z, 0),
+  });
+  geo.angleDeg = angleDeg;
+  geo.gap = gapMm * MM;
+  for (let i = 0; i <= 256; i++) {
+    const z = (length * i) / 256;
+    if (radius(geo, z) - innerRadius(geo, z) <= 1e-6) {
+      throw new Error('the two cones meet: widen the tube, narrow the gap, or ease the inner angle');
+    }
+  }
+  return geo;
+}
+
 export function stepped(segments, opts = {}) {
   const edges = [0];
   const radii = [];
@@ -155,13 +191,35 @@ export function radius(geo, z) {
   return geo.radiusAt(Math.min(Math.max(z, 0), geo.length));
 }
 
+/** Radius of the core the blood flows around; 0 when the tube has none. */
+export function innerRadius(geo, z) {
+  if (!geo.innerRadiusAt) return 0;
+  const clamped = Math.min(Math.max(z, 0), geo.length);
+  return Math.min(Math.max(geo.innerRadiusAt(clamped), 0), geo.radiusAt(clamped));
+}
+
+export const hasCore = (geo) => Boolean(geo.innerRadiusAt);
+
+/** Flow area -- the annulus between the walls when there is a core. */
 export function area(geo, z) {
-  const r = radius(geo, z);
-  return Math.PI * r * r;
+  const outer = radius(geo, z);
+  const inner = innerRadius(geo, z);
+  return Math.PI * (outer * outer - inner * inner);
 }
 
 export function diameter(geo, z) {
   return 2 * radius(geo, z);
+}
+
+/**
+ * 4A/P -- the width that matters to a settling cell: the bore of a plain tube,
+ * twice the gap of an annulus.
+ */
+export function hydraulicDiameter(geo, z) {
+  const outer = radius(geo, z);
+  const inner = innerRadius(geo, z);
+  const perimeter = 2 * Math.PI * (outer + inner);
+  return perimeter > 0 ? (4 * area(geo, z)) / perimeter : 2 * outer;
 }
 
 function integrationGrid(geo, intervals) {
@@ -193,6 +251,58 @@ export function cumulative(geo) {
   }
   geo._cum = { grid, cum };
   return geo._cum;
+}
+
+/**
+ * Cached table of the walls' horizontal projection below each height.
+ *
+ * A wall that is not vertical is a settling surface: cells land on its
+ * upward-facing side, clear plasma is released under its downward-facing side.
+ * For an axisymmetric wall the horizontal projection between two heights is
+ * exactly the change in the circle it encloses, so the total is the total
+ * variation of pi r^2 -- no angles to estimate.
+ */
+function wallTable(geo) {
+  if (geo._wall) return geo._wall;
+  const grid = integrationGrid(geo, 4096);
+  const cum = new Float64Array(grid.length);
+  let running = 0;
+  let prevOuter = Math.PI * radius(geo, grid[0]) ** 2;
+  let prevInner = Math.PI * innerRadius(geo, grid[0]) ** 2;
+  for (let i = 1; i < grid.length; i++) {
+    const outer = Math.PI * radius(geo, grid[i]) ** 2;
+    const inner = Math.PI * innerRadius(geo, grid[i]) ** 2;
+    running += Math.abs(outer - prevOuter) + Math.abs(inner - prevInner);
+    cum[i] = running;
+    prevOuter = outer;
+    prevInner = inner;
+  }
+  geo._wall = { grid, cum };
+  return geo._wall;
+}
+
+export function wallProjection(geo, zLo, zHi) {
+  if (zHi <= zLo) return 0;
+  const { grid, cum } = wallTable(geo);
+  const lo = interpolate(Math.min(Math.max(zLo, 0), geo.length), grid, cum);
+  const hi = interpolate(Math.min(Math.max(zHi, 0), geo.length), grid, cum);
+  return Math.max(hi - lo, 0);
+}
+
+function hydraulicTable(geo) {
+  if (geo._hyd) return geo._hyd;
+  const grid = integrationGrid(geo, 4096);
+  const cum = new Float64Array(grid.length);
+  let running = 0;
+  let prev = hydraulicDiameter(geo, grid[0]);
+  for (let i = 1; i < grid.length; i++) {
+    const here = hydraulicDiameter(geo, grid[i]);
+    running += (grid[i] - grid[i - 1]) * 0.5 * (prev + here);
+    cum[i] = running;
+    prev = here;
+  }
+  geo._hyd = { grid, cum };
+  return geo._hyd;
 }
 
 export function tubeVolume(geo) {
@@ -231,17 +341,13 @@ export function cellVolumes(geo, zFaces) {
   return volumes;
 }
 
-export function meanDiameter(geo, zLo, zHi, intervals = 256) {
-  if (zHi <= zLo) return diameter(geo, zLo);
-  let total = 0;
-  let prev = diameter(geo, zLo);
-  for (let i = 1; i <= intervals; i++) {
-    const z = zLo + ((zHi - zLo) * i) / intervals;
-    const here = diameter(geo, z);
-    total += ((zHi - zLo) / intervals) * 0.5 * (prev + here);
-    prev = here;
-  }
-  return total / (zHi - zLo);
+/** Length-averaged hydraulic diameter -- the gap the Boycott model works with. */
+export function meanDiameter(geo, zLo, zHi) {
+  if (zHi <= zLo) return hydraulicDiameter(geo, zLo);
+  const { grid, cum } = hydraulicTable(geo);
+  const lo = interpolate(Math.min(Math.max(zLo, 0), geo.length), grid, cum);
+  const hi = interpolate(Math.min(Math.max(zHi, 0), geo.length), grid, cum);
+  return (hi - lo) / (zHi - zLo);
 }
 
 // ----------------------------------------------------------------- flux
@@ -286,15 +392,32 @@ export function wallFactor(particleDiameter, tubeDiameter, floor = 0.05) {
   return Math.min(Math.max(k, floor), 1);
 }
 
-/** Boycott enhancement of a tilted tube (PNK with a calibrated efficiency). */
+/**
+ * Boycott enhancement: the horizontal projection of every settling surface,
+ * divided by the cross-section the boundary is moving through.
+ *
+ * Two surfaces contribute and they simply add: the side of a tilted tube
+ * (4 L sin(theta) / pi d), and any wall that is not vertical, which is what
+ * makes a cone settle faster than a cylinder standing perfectly upright.
+ * `efficiency` is calibrated so a 3 degree tilt inflates a Westergren reading
+ * by about 30 %, as the clinical rule of thumb has it.
+ */
 export function boycottFactor(tiltDeg, suspensionLength, gap, options = {}) {
-  const { model = 'pnk', efficiency = 0.08, maxEnhancement = 10 } = options;
+  const {
+    model = 'pnk', efficiency = 0.08, maxEnhancement = 10,
+    walls = true, wallProjection: projectedWall = 0, area: areaRef = 0,
+  } = options;
   const theta = (tiltDeg * Math.PI) / 180;
   const cos = Math.max(Math.cos(theta), 0);
-  if (model === 'none' || tiltDeg === 0) return cos;
-  if (gap <= 0 || suspensionLength <= 0) return cos;
-  const side = (efficiency * 4 * suspensionLength * Math.abs(Math.sin(theta))) / (Math.PI * gap);
-  return Math.min(cos + side, maxEnhancement);
+  if (model === 'none') return cos;
+
+  let projected = 0;
+  if (gap > 0 && suspensionLength > 0) {
+    projected += (4 * suspensionLength * Math.abs(Math.sin(theta))) / (Math.PI * gap);
+  }
+  if (walls && projectedWall > 0 && areaRef > 0) projected += projectedWall / areaRef;
+  if (projected <= 0) return cos;
+  return Math.min(cos + efficiency * projected, maxEnhancement);
 }
 
 // --------------------------------------------------------------- solver
@@ -309,7 +432,7 @@ export const CONFIG_DEFAULTS = {
   aggregationLag: true,
   interfaceFraction: 0.5,
   sedimentFraction: 0.5,
-  boycott: { model: 'pnk', efficiency: 0.08, maxEnhancement: 10 },
+  boycott: { model: 'pnk', efficiency: 0.08, maxEnhancement: 10, walls: true },
 };
 
 /**
@@ -402,7 +525,7 @@ export function simulate(geometry, bloodInput = {}, configInput = {}) {
   const uFace = new Float64Array(n + 1);
   for (let i = 0; i <= n; i++) {
     uFace[i] = config.wallCorrection
-      ? u0 * wallFactor(blood.aggregateUm * 1e-6, diameter(geometry, zFaces[i]))
+      ? u0 * wallFactor(blood.aggregateUm * 1e-6, hydraulicDiameter(geometry, zFaces[i]))
       : u0;
   }
 
@@ -426,6 +549,7 @@ export function simulate(geometry, bloodInput = {}, configInput = {}) {
   const interfaceH = new Float64Array(nSamples);
   const sedimentH = new Float64Array(nSamples);
   const enhancement = new Float64Array(nSamples).fill(1);
+  const aggregation = new Float64Array(nSamples).fill(1);
 
   const ifaceThreshold = config.interfaceFraction * blood.hematocrit;
   const sedThreshold =
@@ -434,16 +558,21 @@ export function simulate(geometry, bloodInput = {}, configInput = {}) {
   const readInterface = () =>
     interfaceHeight(zFaces, cumVolume, volumes, phi, ifaceThreshold, fillHeight);
 
-  const record = (k, lam) => {
+  const record = (k, lam, agg) => {
     phiHistory.push(Float64Array.from(phi));
     interfaceH[k] = readInterface();
     sedimentH[k] = crossingHeight(zCenters, phi, sedThreshold, fillHeight);
     enhancement[k] = lam;
+    aggregation[k] = agg;
   };
-  record(0, 1);
+  record(0, 1, config.aggregationLag ? aggregationFactor(blood, 0) : 1);
 
+  // a straight upright tube has a constant enhancement; a cone does not,
+  // because its inclined walls enter the column as the boundary descends
+  const hasWalls = config.boycott.walls !== false
+    && wallProjection(geometry, 0, geometry.length) > 0;
   const fixedLambda =
-    geometry.tiltDeg === 0 || config.boycott.model !== 'pnk'
+    config.boycott.model !== 'pnk' || (geometry.tiltDeg === 0 && !hasWalls)
       ? boycottFactor(geometry.tiltDeg, 0, 1, config.boycott)
       : null;
 
@@ -460,7 +589,11 @@ export function simulate(geometry, bloodInput = {}, configInput = {}) {
       const top = readInterface();
       const bottom = crossingHeight(zCenters, phi, sedThreshold, fillHeight);
       const gap = meanDiameter(geometry, bottom, Math.max(top, bottom + 1e-6));
-      lam = boycottFactor(geometry.tiltDeg, Math.max(top - bottom, 0), gap, config.boycott);
+      lam = boycottFactor(geometry.tiltDeg, Math.max(top - bottom, 0), gap, {
+        ...config.boycott,
+        wallProjection: wallProjection(geometry, bottom, top),
+        area: area(geometry, top),
+      });
     }
 
     let dt = Math.min(config.sampleIntervalS, target - t);
@@ -490,7 +623,7 @@ export function simulate(geometry, bloodInput = {}, configInput = {}) {
     steps++;
     if (steps > 5e6) throw new Error('step limit exceeded');
     if (t >= target - 1e-12) {
-      record(nextSample, lam);
+      record(nextSample, lam, agg);
       nextSample++;
     }
   }
@@ -503,11 +636,17 @@ export function simulate(geometry, bloodInput = {}, configInput = {}) {
   for (let i = 0; i < nSamples; i++) fallMm[i] = (fillHeight - interfaceH[i]) / MM;
 
   const finished = (typeof performance !== 'undefined' ? performance : Date).now();
+  const wallFactors = new Float64Array(n);
+  for (let i = 0; i < n; i++) wallFactors[i] = (uFace[i] + uFace[i + 1]) / (2 * u0);
+
   return {
     label: geometry.name,
     geometry,
     blood,
     config,
+    law,
+    wallFactors,
+    aggregation,
     times,
     zFaces,
     zCenters,
@@ -551,6 +690,62 @@ export const sedimentMm = (result, index = -1) => {
   return result.sediment[i] / MM;
 };
 
+// ------------------------------------------------------------ flow field
+/**
+ * The flow inside the tube, which the concentration field fixes completely.
+ *
+ * Nothing enters or leaves a closed tube and both phases are incompressible, so
+ * the net volumetric flux through every cross-section is zero:
+ *
+ *     phi * v_cells = (1 - phi) * v_plasma
+ *
+ * The solver already has the cell flux f = u_local * psi(phi); dividing by each
+ * phase's own volume fraction gives that phase's velocity. The rising plasma is
+ * the physical reason a crowded suspension settles so slowly, and why a
+ * constriction or a narrow gap throttles the column: it has to get back up.
+ */
+export function localVelocityScale(result, index) {
+  const out = new Float64Array(result.wallFactors.length);
+  const scale = result.stokesVelocity * result.enhancement[index] * result.aggregation[index];
+  for (let i = 0; i < out.length; i++) out[i] = scale * result.wallFactors[i];
+  return out;
+}
+
+export function velocityField(result, index) {
+  const phi = result.phi[index];
+  const scale = localVelocityScale(result, index);
+  const cells = new Float64Array(phi.length);
+  const plasma = new Float64Array(phi.length);
+  for (let i = 0; i < phi.length; i++) {
+    const flux = scale[i] * result.law.shape(phi[i]);
+    cells[i] = phi[i] > 1e-9 ? flux / phi[i] : 0;
+    plasma[i] = phi[i] < 1 - 1e-9 ? flux / (1 - phi[i]) : 0;
+  }
+  return { cells, plasma };
+}
+
+export function velocityFieldMmPerHour(result, index) {
+  const { cells, plasma } = velocityField(result, index);
+  const factor = HOUR / MM;
+  for (let i = 0; i < cells.length; i++) {
+    cells[i] *= factor;
+    plasma[i] *= factor;
+  }
+  return { cells, plasma };
+}
+
+/** Plasma pushed up through each cross-section [mL/h]. */
+export function plasmaThroughput(result, index) {
+  const phi = result.phi[index];
+  const scale = localVelocityScale(result, index);
+  const out = new Float64Array(phi.length);
+  for (let i = 0; i < phi.length; i++) {
+    out[i] = scale[i] * result.law.shape(phi[i]) * area(result.geometry, result.zCenters[i])
+      * 1e6 * HOUR;
+  }
+  return out;
+}
+
 // ------------------------------------------------------------- geometries
 export const GEOMETRIES = {
   westergren: () => cylinder(200, 2.5, { name: 'Westergren' }),
@@ -561,12 +756,29 @@ export const GEOMETRIES = {
   hourglass: () => hourglass(200, 4.0, 1.2, 0.5, { name: 'Hourglass' }),
   bulb: () => bulb(200, 2.5, 6.0, 0.5, 0.1, { name: 'Bulb' }),
   stepped: () => stepped([[70, 1.5], [60, 3.0], [70, 5.0]], { name: 'Stepped' }),
+  annular: () => annularCone(ANNULAR_DEFAULTS.lengthMm, ANNULAR_DEFAULTS.bottomDiameterMm,
+                             ANNULAR_DEFAULTS.angleDeg, ANNULAR_DEFAULTS.gapMm,
+                             { name: 'Cone in cone' }),
 };
 
-export function getGeometry(name, tiltDeg = 0) {
-  const factory = GEOMETRIES[name];
-  if (!factory) throw new Error(`unknown geometry ${name}`);
-  const geo = factory();
+export const ANNULAR_DEFAULTS = {
+  lengthMm: 120,
+  bottomDiameterMm: 8,
+  angleDeg: 12,
+  gapMm: 1.5,
+};
+
+export function getGeometry(name, tiltDeg = 0, options = {}) {
+  let geo;
+  if (name === 'annular') {
+    const p = { ...ANNULAR_DEFAULTS, ...options };
+    geo = annularCone(p.lengthMm, p.bottomDiameterMm, p.angleDeg, p.gapMm,
+                      { name: 'Cone in cone' });
+  } else {
+    const factory = GEOMETRIES[name];
+    if (!factory) throw new Error(`unknown geometry ${name}`);
+    geo = factory();
+  }
   geo.tiltDeg = tiltDeg;
   geo.key = name;
   return geo;

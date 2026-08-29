@@ -12,8 +12,9 @@
  */
 
 import {
-  BLOOD_PRESETS, GEOMETRIES, MM, esr, getGeometry, katzIndex, maxSettlingRate,
-  radius, sedimentMm, simulate,
+  ANNULAR_DEFAULTS, BLOOD_PRESETS, GEOMETRIES, HOUR, MM, esr, getGeometry, hasCore,
+  innerRadius, katzIndex, maxSettlingRate, radius, sedimentMm, simulate,
+  velocityField,
 } from './sim.js';
 
 const DURATION_H = 2;
@@ -28,8 +29,16 @@ const FULL = { nCells: 400, sampleIntervalS: 30 };
    palest step being clear plasma. Fixed across themes -- see styles.css. */
 const BLOOD_RAMP = ['#fdeceb', '#f9c9c5', '#f1a29c', '#e5726c',
                     '#d34b45', '#b3302c', '#8a1f1e', '#5c1213'];
+/* the returning plasma gets the one cool accent on the page */
+const PLASMA_INK = '#2f7d9e';
+
+/* One clock for everything: playing advances the settling, and the tracers
+   drift at their true speed in that same accelerated time. */
+const TIME_SCALE = 900;      // seconds of settling per second on screen
+const TRACER_COUNT = 190;
 
 const GEOMETRY_LABELS = {
+  annular: 'Cone in cone',
   westergren: 'Westergren',
   wintrobe: 'Wintrobe',
   micro: 'Capillary',
@@ -54,10 +63,16 @@ const state = {
   hematocrit: 0.45,
   aggregateUm: 60,
   tiltDeg: 0,
+  coneAngleDeg: ANNULAR_DEFAULTS.angleDeg,
+  coneGapMm: ANNULAR_DEFAULTS.gapMm,
+  showFlow: true,
   sample: 0,
   playing: false,
   result: null,
 };
+
+/** Tracer particles, advanced by the solved velocity field. */
+let tracers = [];
 
 const el = (id) => document.getElementById(id);
 const tubeCanvas = el('tube-canvas');
@@ -118,7 +133,109 @@ function fitCanvas(canvas, ctx) {
   return { width, height };
 }
 
-/** The tube, its etched millimetre scale, and the boundary being read. */
+/**
+ * The tube, drawn in its own millimetre space and then rotated.
+ *
+ * Working in millimetres for both axes (with the bore widened by a fixed
+ * factor so a 2.5 mm bore is visible beside a 200 mm column) means a tilt is a
+ * true rotation rather than a shear -- which is the only way the Boycott effect
+ * looks like what it is.
+ */
+function tubeFrame(width, height, result) {
+  const geo = result.geometry;
+  const lengthMm = geo.length / MM;
+  const referenceMm = Math.max(REFERENCE_HEIGHT_MM, lengthMm);
+  const tilt = (geo.tiltDeg * Math.PI) / 180;
+  const cos = Math.cos(tilt);
+  const sin = Math.sin(tilt);
+
+  let widestMm = 0;
+  for (let i = 0; i <= 60; i++) {
+    widestMm = Math.max(widestMm, radius(geo, (geo.length * i) / 60) / MM);
+  }
+  // widen the bore against a common reference, so a capillary still reads narrow
+  const exaggeration = (0.16 * referenceMm) / Math.max(REFERENCE_BORE_MM / 2, widestMm);
+  const halfSpanMm = Math.max(widestMm * exaggeration, 4);
+
+  const padTop = 12;
+  const padBottom = 26;
+  const rulerPx = 40;
+  // the tube leans, so it needs room sideways as well as upright
+  const spanX = 2 * halfSpanMm + Math.abs(sin) * lengthMm;
+  const spanY = cos * lengthMm + 2 * halfSpanMm * Math.abs(sin);
+  const pxPerMm = Math.min(
+    (width - rulerPx - 78) / Math.max(spanX, 1),
+    (height - padTop - padBottom) / Math.max(spanY, referenceMm * 0.55),
+  );
+
+  const footX = rulerPx + halfSpanMm * pxPerMm + 6;
+  const footY = height - padBottom;
+
+  return {
+    geo, lengthMm, referenceMm, exaggeration, pxPerMm, footX, footY, halfSpanMm,
+    tiltDeg: geo.tiltDeg,
+    // x runs across the tube, y along its axis from the closed foot
+    project(x, y) {
+      return [footX + (x * cos + y * sin) * pxPerMm, footY - (y * cos - x * sin) * pxPerMm];
+    },
+    /* step sideways by a number of *pixels*, so ruler ticks keep their size
+       whatever the tube's scale is */
+    offsetPx(point, pixels) {
+      return [point[0] + pixels * cos, point[1] + pixels * sin];
+    },
+    mmPerPixel: 1 / pxPerMm,
+    halfAt(z) {
+      return (radius(this.geo, z) / MM) * exaggeration;
+    },
+    innerAt(z) {
+      const inner = (innerRadius(this.geo, z) / MM) * exaggeration;
+      if (inner <= 0) return 0;
+      // a real annular gap is a millimetre inside a vessel tens of mm across:
+      // widen the band inward so the blood is visible, keeping the outer wall true
+      const outer = (radius(this.geo, z) / MM) * exaggeration;
+      const floor = 0.035 * this.referenceMm;
+      return outer - inner < floor ? Math.max(outer - floor, 0) : inner;
+    },
+  };
+}
+
+function quad(ctx, frame, x0, x1, y0, y1) {
+  const a = frame.project(x0, y0);
+  const b = frame.project(x1, y0);
+  const c = frame.project(x1, y1);
+  const d = frame.project(x0, y1);
+  ctx.beginPath();
+  ctx.moveTo(a[0], a[1]);
+  ctx.lineTo(b[0], b[1]);
+  ctx.lineTo(c[0], c[1]);
+  ctx.lineTo(d[0], d[1]);
+  ctx.closePath();
+}
+
+function wallPath(ctx, frame, side, steps = 200) {
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const z = (frame.geo.length * i) / steps;
+    const half = side < 0 ? -frame.halfAt(z) : frame.halfAt(z);
+    const p = frame.project(half, z / MM);
+    if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]);
+  }
+  ctx.stroke();
+}
+
+function corePath(ctx, frame, side, steps = 200) {
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i <= steps; i++) {
+    const z = (frame.geo.length * i) / steps;
+    const inner = frame.innerAt(z);
+    if (inner <= 0) { started = false; continue; }
+    const p = frame.project(side < 0 ? -inner : inner, z / MM);
+    if (started) ctx.lineTo(p[0], p[1]); else { ctx.moveTo(p[0], p[1]); started = true; }
+  }
+  ctx.stroke();
+}
+
 function drawTube() {
   const { width, height } = fitCanvas(tubeCanvas, tubeCtx);
   const ctx = tubeCtx;
@@ -126,115 +243,200 @@ function drawTube() {
   const result = state.result;
   if (!result) return;
 
-  const geo = result.geometry;
-  const lengthMm = geo.length / MM;
-  const padTop = 14;
-  const padBottom = 20;
-  const scaleWidth = 42;
-  const usable = height - padTop - padBottom;
-  const referenceMm = Math.max(REFERENCE_HEIGHT_MM, lengthMm);
-  const yOf = (mm) => padTop + usable * (1 - mm / referenceMm);
-
-  const columnHalf = Math.min((width - scaleWidth) * 0.3, 58);
-  // sit the column just clear of the scale, leaving the right for annotation
-  const cx = Math.min(scaleWidth + columnHalf + 16, scaleWidth + (width - scaleWidth) / 2);
-  const halfOf = (z) =>
-    Math.max((radius(geo, z) / (0.5 * REFERENCE_BORE_MM * MM)) * columnHalf, 3.5);
-
-  // etched scale
-  ctx.font = '10px "IBM Plex Mono", ui-monospace, monospace';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'right';
-  const majorStep = 50;
-  for (let mm = 0; mm <= lengthMm + 0.001; mm += majorStep / 5) {
-    const major = Math.abs(mm % majorStep) < 1e-6;
-    const y = yOf(mm);
-    ctx.strokeStyle = line;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(scaleWidth - (major ? 12 : 6), y);
-    ctx.lineTo(scaleWidth - 2, y);
-    ctx.stroke();
-    if (major) {
-      ctx.fillStyle = muted;
-      ctx.fillText(String(Math.round(mm)), scaleWidth - 15, y);
-    }
-  }
-
-  // glass interior
-  const profile = [];
-  const steps = 220;
-  for (let i = 0; i <= steps; i++) {
-    const z = (geo.length * i) / steps;
-    profile.push({ z, mm: z / MM, half: halfOf(z) });
-  }
-  ctx.beginPath();
-  profile.forEach((p, i) => (i ? ctx.lineTo(cx - p.half, yOf(p.mm)) : ctx.moveTo(cx - p.half, yOf(p.mm))));
-  for (let i = profile.length - 1; i >= 0; i--) ctx.lineTo(cx + profile[i].half, yOf(profile[i].mm));
-  ctx.closePath();
-  ctx.fillStyle = glass;
-  ctx.fill();
-  ctx.save();
-  ctx.clip();
-
-  // the suspension itself, cell by cell
+  const frame = tubeFrame(width, height, result);
+  const { geo } = frame;
   const phi = result.phi[state.sample];
   const zFaces = result.zFaces;
   const maxPacking = result.blood.maxPacking;
-  for (let i = 0; i < phi.length; i++) {
-    const yTop = yOf(zFaces[i + 1] / MM);
-    const yBottom = yOf(zFaces[i] / MM);
-    const half = Math.max(halfOf(zFaces[i]), halfOf(zFaces[i + 1])) + 1;
-    ctx.fillStyle = rampColor(phi[i], maxPacking);
-    ctx.fillRect(cx - half, yTop - 0.5, half * 2, yBottom - yTop + 1);
+  const annular = hasCore(geo);
+
+  // --- etched scale, attached to the tube so it leans with it ----------
+  ctx.font = '10px "IBM Plex Mono", ui-monospace, monospace';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'right';
+  const majorStep = frame.lengthMm > 150 ? 50 : frame.lengthMm > 60 ? 25 : 10;
+  for (let mm = 0; mm <= frame.lengthMm + 1e-6; mm += majorStep / 5) {
+    const major = Math.abs(mm % majorStep) < 1e-6;
+    const wall = frame.project(-frame.halfAt(mm * MM), mm);
+    const from = frame.offsetPx(wall, -(major ? 14 : 8));
+    const to = frame.offsetPx(wall, -3);
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(from[0], from[1]);
+    ctx.lineTo(to[0], to[1]);
+    ctx.stroke();
+    if (major) {
+      const at = frame.offsetPx(wall, -17);
+      ctx.fillStyle = muted;
+      ctx.fillText(String(Math.round(mm)), Math.max(at[0], 22), at[1]);
+    }
   }
-  // a soft highlight so the column reads as glass
-  const sheenHalf = halfOf(0) > 0 ? columnHalf : columnHalf;
-  const sheen = ctx.createLinearGradient(cx - sheenHalf, 0, cx + sheenHalf, 0);
-  sheen.addColorStop(0, 'rgba(255,255,255,0.30)');
-  sheen.addColorStop(0.28, 'rgba(255,255,255,0.06)');
-  sheen.addColorStop(0.75, 'rgba(0,0,0,0.05)');
-  sheen.addColorStop(1, 'rgba(0,0,0,0.12)');
-  ctx.fillStyle = sheen;
-  ctx.fillRect(cx - sheenHalf, 0, sheenHalf * 2, height);
+
+  // --- glass, then the suspension cell by cell -------------------------
+  ctx.save();
+  ctx.beginPath();
+  for (let i = 0; i <= 200; i++) {
+    const z = (geo.length * i) / 200;
+    const p = frame.project(-frame.halfAt(z), z / MM);
+    if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]);
+  }
+  for (let i = 200; i >= 0; i--) {
+    const z = (geo.length * i) / 200;
+    const p = frame.project(frame.halfAt(z), z / MM);
+    ctx.lineTo(p[0], p[1]);
+  }
+  ctx.closePath();
+  ctx.fillStyle = glass;
+  ctx.fill();
+  ctx.clip();
+
+  const seam = 0.6 * frame.mmPerPixel;   // hide the hairline between bands
+  for (let i = 0; i < phi.length; i++) {
+    const y0 = zFaces[i] / MM - seam;
+    const y1 = zFaces[i + 1] / MM + seam;
+    const outer = Math.max(frame.halfAt(zFaces[i]), frame.halfAt(zFaces[i + 1]));
+    const inner = annular
+      ? Math.min(frame.innerAt(zFaces[i]), frame.innerAt(zFaces[i + 1]))
+      : 0;
+    ctx.fillStyle = rampColor(phi[i], maxPacking);
+    if (inner > 0) {
+      quad(ctx, frame, inner, outer, y0, y1);
+      ctx.fill();
+      quad(ctx, frame, -outer, -inner, y0, y1);
+      ctx.fill();
+    } else {
+      quad(ctx, frame, -outer, outer, y0, y1);
+      ctx.fill();
+    }
+  }
+
+  if (state.showFlow) drawBoycottLayers(ctx, frame, result);
+  if (state.showFlow) drawTracers(ctx, frame, result);
   ctx.restore();
 
-  // rim
+  // --- walls ----------------------------------------------------------
   ctx.strokeStyle = glassRim;
-  ctx.lineWidth = 1.4;
+  ctx.lineWidth = 1.3;
+  wallPath(ctx, frame, -1);
+  wallPath(ctx, frame, 1);
+  if (annular) {
+    ctx.lineWidth = 1.1;
+    corePath(ctx, frame, -1);
+    corePath(ctx, frame, 1);
+  }
+  const bottomLeft = frame.project(-frame.halfAt(0), 0);
+  const bottomRight = frame.project(frame.halfAt(0), 0);
+  ctx.lineWidth = 1.3;
   ctx.beginPath();
-  profile.forEach((p, i) => (i ? ctx.lineTo(cx - p.half, yOf(p.mm)) : ctx.moveTo(cx - p.half, yOf(p.mm))));
-  ctx.stroke();
-  ctx.beginPath();
-  profile.forEach((p, i) => (i ? ctx.lineTo(cx + p.half, yOf(p.mm)) : ctx.moveTo(cx + p.half, yOf(p.mm))));
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(cx - profile[0].half, yOf(0));
-  ctx.lineTo(cx + profile[0].half, yOf(0));
+  ctx.moveTo(bottomLeft[0], bottomLeft[1]);
+  ctx.lineTo(bottomRight[0], bottomRight[1]);
   ctx.stroke();
 
-  // the reading: where the plasma boundary stands now
+  // --- the reading ----------------------------------------------------
   const boundaryMm = result.interface[state.sample] / MM;
-  const yBoundary = yOf(boundaryMm);
-  const boundaryHalf = halfOf(result.interface[state.sample]) + 6;
+  const half = frame.halfAt(result.interface[state.sample]);
+  const left = frame.project(-half - 5, boundaryMm);
+  const right = frame.project(half + 5, boundaryMm);
   ctx.strokeStyle = ink;
   ctx.lineWidth = 1.6;
   ctx.beginPath();
-  ctx.moveTo(cx - boundaryHalf, yBoundary);
-  ctx.lineTo(cx + boundaryHalf, yBoundary);
+  ctx.moveTo(left[0], left[1]);
+  ctx.lineTo(right[0], right[1]);
   ctx.stroke();
 
   ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
   ctx.font = '600 11px "Barlow Semi Condensed", Arial, sans-serif';
   ctx.fillStyle = ink;
-  const fall = result.fallMm[state.sample];
-  const labelY = Math.min(Math.max(yBoundary - 8, padTop + 6), height - padBottom - 4);
-  ctx.fillText(`${fall.toFixed(1)} mm fallen`, cx + boundaryHalf + 5, labelY);
+  const labelX = Math.min(Math.max(right[0], right[0]), width - 74);
+  ctx.fillText(`${result.fallMm[state.sample].toFixed(1)} mm fallen`, labelX + 5, right[1] - 3);
+
+  // --- gravity, so the lean is unambiguous ----------------------------
+  if (geo.tiltDeg !== 0) {
+    const gx = width - 20;
+    const gy = 20;
+    ctx.strokeStyle = muted;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(gx, gy);
+    ctx.lineTo(gx, gy + 22);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(gx - 3.5, gy + 16);
+    ctx.lineTo(gx, gy + 23);
+    ctx.lineTo(gx + 3.5, gy + 16);
+    ctx.fillStyle = muted;
+    ctx.fill();
+    ctx.textAlign = 'right';
+    ctx.font = 'italic 10px "IBM Plex Sans", system-ui, sans-serif';
+    ctx.fillText('g', gx - 5, gy + 16);
+  }
 
   ctx.textAlign = 'center';
   ctx.fillStyle = muted;
   ctx.font = '10px "IBM Plex Sans", system-ui, sans-serif';
-  ctx.fillText('height in mm · width exaggerated', cx, height - 5);
+  const note = annular ? 'height in mm · bore and gap exaggerated'
+                       : 'height in mm · bore exaggerated';
+  ctx.fillText(note, width / 2, height - 6);
+}
+
+/**
+ * The two wall layers a tilted tube develops: clear plasma running up the
+ * raised side, sediment sliding down the lowered one. The 1-D model resolves
+ * only the axis, so these are drawn schematically -- their thickness follows
+ * how much of the enhancement comes from the tilt.
+ */
+function drawBoycottLayers(ctx, frame, result) {
+  const tilt = frame.geo.tiltDeg;
+  if (!tilt) return;
+  const lam = result.enhancement[state.sample];
+  const share = Math.min(Math.max((lam - 1) / Math.max(lam, 1e-9), 0), 0.5);
+  if (share < 0.02) return;
+
+  const top = result.interface[state.sample];
+  const bottom = result.sediment[state.sample];
+  if (top <= bottom) return;
+
+  const steps = 60;
+  for (const [side, color, alpha] of [[-1, BLOOD_RAMP[0], 0.92], [1, BLOOD_RAMP[7], 0.5]]) {
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const z = bottom + ((top - bottom) * i) / steps;
+      const half = frame.halfAt(z);
+      const p = frame.project(side * half, z / MM);
+      if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]);
+    }
+    for (let i = steps; i >= 0; i--) {
+      const z = bottom + ((top - bottom) * i) / steps;
+      const half = frame.halfAt(z);
+      const p = frame.project(side * half * (1 - share), z / MM);
+      ctx.lineTo(p[0], p[1]);
+    }
+    ctx.closePath();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+/** Tracers carried by the velocity field the model actually solved. */
+function drawTracers(ctx, frame, result) {
+  for (const tracer of tracers) {
+    const half = frame.halfAt(tracer.z);
+    const inner = frame.innerAt(tracer.z);
+    const across = inner > 0
+      ? tracer.side * (inner + (half - inner) * tracer.lateral)
+      : tracer.lateral * half * tracer.side;
+    const [px, py] = frame.project(across, tracer.z / MM);
+    ctx.beginPath();
+    ctx.arc(px, py, tracer.phase === 'cells' ? 1.9 : 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = tracer.phase === 'cells' ? BLOOD_RAMP[7] : PLASMA_INK;
+    ctx.globalAlpha = tracer.phase === 'cells' ? 0.75 : 0.85;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 }
 
 /** The settling curve, drawn like a chart recorder trace. */
@@ -348,15 +550,78 @@ function niceCeiling(value) {
   return 10 * magnitude;
 }
 
+// -------------------------------------------------------------- tracers
+function seedTracers(result) {
+  const geo = result.geometry;
+  tracers = [];
+  for (let i = 0; i < TRACER_COUNT; i++) {
+    tracers.push({
+      phase: i % 3 === 0 ? 'plasma' : 'cells',
+      z: Math.random() * result.fillHeight,
+      lateral: 0.15 + Math.random() * 0.8,
+      side: Math.random() < 0.5 ? -1 : 1,
+    });
+  }
+  void geo;
+}
+
+/**
+ * Move every tracer by the local phase velocity over ``dtSim`` seconds of
+ * settling. Cells fall, plasma rises, both at the speed the solver produced --
+ * nothing here is invented, only carried.
+ */
+function advanceTracers(dtSim) {
+  const result = state.result;
+  if (!result || !tracers.length) return;
+  const { cells, plasma } = velocityField(result, state.sample);
+  const z = result.zCenters;
+  const dz = z.length > 1 ? z[1] - z[0] : 1;
+  const top = result.interface[state.sample];
+  const floor = result.sediment[state.sample];
+
+  for (const tracer of tracers) {
+    const i = Math.min(Math.max(Math.round((tracer.z - z[0]) / dz), 0), z.length - 1);
+    const speed = tracer.phase === 'cells' ? cells[i] : plasma[i];
+    tracer.z += (tracer.phase === 'cells' ? -1 : 1) * speed * dtSim;
+
+    // recycle: cells re-enter under the boundary, plasma re-enters above the bed
+    if (tracer.phase === 'cells' && tracer.z <= floor + 1e-6) {
+      tracer.z = top - Math.random() * Math.max(top - floor, 1e-6) * 0.25;
+      tracer.lateral = 0.15 + Math.random() * 0.8;
+      tracer.side = Math.random() < 0.5 ? -1 : 1;
+    } else if (tracer.phase === 'plasma' && tracer.z >= top - 1e-6) {
+      tracer.z = floor + Math.random() * Math.max(top - floor, 1e-6) * 0.25;
+      tracer.lateral = 0.15 + Math.random() * 0.8;
+      tracer.side = Math.random() < 0.5 ? -1 : 1;
+    }
+    tracer.z = Math.min(Math.max(tracer.z, 0), result.fillHeight);
+  }
+}
+
 // ------------------------------------------------------------- running
+function currentGeometry() {
+  return getGeometry(state.geometry, state.tiltDeg, {
+    angleDeg: state.coneAngleDeg,
+    gapMm: state.coneGapMm,
+  });
+}
+
 function run(quality) {
-  const geometry = getGeometry(state.geometry, state.tiltDeg);
+  let geometry;
+  try {
+    geometry = currentGeometry();
+  } catch (error) {
+    el('geometry-error').textContent = error.message;
+    return;
+  }
+  el('geometry-error').textContent = '';
   state.result = simulate(
     geometry,
     { hematocrit: state.hematocrit, aggregateUm: state.aggregateUm },
     { durationH: DURATION_H, ...quality },
   );
   state.sample = Math.min(state.sample, state.result.times.length - 1);
+  seedTracers(state.result);
   render();
 }
 
@@ -375,6 +640,22 @@ function render() {
   el('clock-time').textContent = `${minutes.toFixed(0)} min`;
   el('scrub').max = String(result.times.length - 1);
   el('scrub').value = String(state.sample);
+
+  const { cells, plasma } = velocityField(result, state.sample);
+  const perHour = HOUR / MM;
+  let fastestCells = 0;
+  let fastestPlasma = 0;
+  for (let i = 0; i < cells.length; i++) {
+    if (result.phi[state.sample][i] > 0.01) fastestCells = Math.max(fastestCells, cells[i]);
+    fastestPlasma = Math.max(fastestPlasma, plasma[i]);
+  }
+  el('flow-cells').innerHTML = `${(fastestCells * perHour).toFixed(1)}<small> mm/h</small>`;
+  el('flow-plasma').innerHTML = `${(fastestPlasma * perHour).toFixed(1)}<small> mm/h</small>`;
+  el('flow-boost').innerHTML =
+    `${result.enhancement[state.sample].toFixed(2)}<small>×</small>`;
+
+  const annular = state.geometry === 'annular';
+  el('cone-controls').hidden = !annular;
   drawTube();
   drawChart();
 }
@@ -404,22 +685,42 @@ function scheduleRefine() {
 function tubeSilhouette(key) {
   const geo = GEOMETRIES[key]();
   const points = 26;
-  let maxRadius = 0;
   const radii = [];
+  const cores = [];
+  let maxRadius = 0;
   for (let i = 0; i <= points; i++) {
-    const r = radius(geo, (geo.length * i) / points);
+    const z = (geo.length * i) / points;
+    const r = radius(geo, z);
     radii.push(r);
+    cores.push(innerRadius(geo, z));
     maxRadius = Math.max(maxRadius, r);
   }
-  const left = [];
-  const right = [];
-  for (let i = 0; i <= points; i++) {
-    const y = 44 - (44 * i) / points;
-    const half = (radii[i] / maxRadius) * 9;
-    left.push(`${(11 - half).toFixed(2)},${y.toFixed(2)}`);
-    right.unshift(`${(11 + half).toFixed(2)},${y.toFixed(2)}`);
+  const band = (outerScale, innerScale) => {
+    const left = [];
+    const right = [];
+    for (let i = 0; i <= points; i++) {
+      const y = 44 - (44 * i) / points;
+      left.push(`${(11 - outerScale(i)).toFixed(2)},${y.toFixed(2)}`);
+      right.unshift(`${(11 + outerScale(i)).toFixed(2)},${y.toFixed(2)}`);
+    }
+    void innerScale;
+    return `M${left.join('L')}L${right.join('L')}Z`;
+  };
+  const outer = (i) => (radii[i] / maxRadius) * 9;
+  let path = band(outer);
+  if (hasCore(geo)) {
+    // punch the core out, so a cone-in-cone reads as a gap rather than a funnel
+    const inner = [];
+    const innerRight = [];
+    for (let i = 0; i <= points; i++) {
+      const y = 44 - (44 * i) / points;
+      const half = Math.max((cores[i] / maxRadius) * 9, 0);
+      inner.push(`${(11 - half).toFixed(2)},${y.toFixed(2)}`);
+      innerRight.unshift(`${(11 + half).toFixed(2)},${y.toFixed(2)}`);
+    }
+    path += `M${inner.join('L')}L${innerRight.join('L')}Z`;
   }
-  return `<svg viewBox="0 0 22 44" aria-hidden="true"><path d="M${left.join('L')}L${right.join('L')}Z"/></svg>`;
+  return `<svg viewBox="0 0 22 44" aria-hidden="true"><path fill-rule="evenodd" d="${path}"/></svg>`;
 }
 
 function buildChips() {
@@ -472,6 +773,8 @@ function syncSliderLabels() {
   el('hematocrit-out').textContent = `${Math.round(state.hematocrit * 100)} %`;
   el('aggregate-out').textContent = `${state.aggregateUm} µm`;
   el('tilt-out').textContent = `${state.tiltDeg}°`;
+  el('cone-angle-out').textContent = `${state.coneAngleDeg}°`;
+  el('cone-gap-out').textContent = `${state.coneGapMm.toFixed(1)} mm`;
 }
 
 function bindSliders() {
@@ -494,6 +797,16 @@ function bindSliders() {
   bind('hematocrit', (v) => { state.hematocrit = v / 100; });
   bind('aggregate', (v) => { state.aggregateUm = v; });
   bind('tilt', (v) => { state.tiltDeg = v; });
+  bind('cone-angle', (v) => { state.coneAngleDeg = v; });
+  bind('cone-gap', (v) => { state.coneGapMm = v / 10; });
+
+  const flow = el('flow-toggle');
+  flow.addEventListener('click', () => {
+    state.showFlow = !state.showFlow;
+    flow.setAttribute('aria-pressed', String(state.showFlow));
+    flow.querySelector('span').textContent = state.showFlow ? 'Flow on' : 'Flow off';
+    render();
+  });
 
   el('scrub').addEventListener('input', (event) => {
     stopPlaying();
@@ -522,16 +835,36 @@ function startPlaying() {
   lastFrame = performance.now();
   const tick = (now) => {
     if (!state.playing) return;
-    const elapsed = now - lastFrame;
-    if (elapsed > 40) {
-      lastFrame = now;
-      const total = state.result.times.length;
-      state.sample = state.sample >= total - 1 ? 0 : state.sample + 1;
-      render();
-    }
+    const dtReal = Math.min((now - lastFrame) / 1000, 0.1);
+    lastFrame = now;
+    const times = state.result.times;
+    const dtSim = dtReal * TIME_SCALE;
+    let clock = times[state.sample] + dtSim;
+    if (clock > times[times.length - 1]) clock = 0;
+    // nearest stored profile, then carry the tracers over the same interval
+    let index = Math.round(clock / (times[1] - times[0]));
+    index = Math.min(Math.max(index, 0), times.length - 1);
+    state.sample = index;
+    advanceTracers(dtSim);
+    render();
     playHandle = requestAnimationFrame(tick);
   };
   playHandle = requestAnimationFrame(tick);
+}
+
+/** Keep the tracers drifting even while paused, so the flow stays readable. */
+function idleDrift() {
+  let last = performance.now();
+  const tick = (now) => {
+    const dtReal = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!state.playing && state.showFlow && state.result && !document.hidden) {
+      advanceTracers(dtReal * TIME_SCALE);
+      drawTube();
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 // ----------------------------------------------------------------- boot
@@ -557,6 +890,7 @@ function boot() {
 
   if (document.fonts?.ready) document.fonts.ready.then(render);
 
+  idleDrift();
   run(FULL);
   state.sample = state.result.times.length - 1;
   render();

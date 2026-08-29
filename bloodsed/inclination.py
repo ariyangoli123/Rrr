@@ -26,8 +26,25 @@ plasma has to squeeze through a millimetre-scale channel.  The default
 Westergren tube inflates the ESR by roughly 30 %.  Set ``efficiency=1.0`` for
 the textbook formula.
 
-This is a 1-D surrogate for a genuinely 2-D flow, so treat tilted results as
-"how much faster, roughly" rather than as a prediction to three digits.
+Inclined *walls* work the same way, and a tube does not have to be tilted to
+have them.  In a cone, cells land on the upward-facing wall and slide down it
+while clear plasma is released under the downward-facing side -- which is the
+whole principle of a lamella settler, and of the cone-inside-a-cone geometry.
+The projected-area argument covers this too, and for an axisymmetric wall the
+horizontal projection between two heights is exactly the change in the circle it
+encloses, so it needs no angle estimate at all (see
+:meth:`~bloodsed.geometry.TubeGeometry.wall_projection`).  The two contributions
+are projections of different surfaces, so they add:
+
+    Lambda = cos(theta) + eta * [ 4 L sin(theta) / (pi d) + P_wall / A ]
+
+A straight tube has ``P_wall = 0``, so nothing about the tilted-tube behaviour
+above changes.
+
+This is a 1-D surrogate for a genuinely 2-D flow, so treat both terms as "how
+much faster, roughly" rather than as predictions to three digits.  In
+particular the enhancement is applied along the whole column, while the
+surfaces producing it may sit in one part of the vessel.
 """
 
 from __future__ import annotations
@@ -54,12 +71,17 @@ class BoycottModel:
         nonsense settling velocity, and keeps the time step sane.
     constant_factor:
         Used when ``model == "constant"``.
+    walls:
+        Count the projection of inclined *walls* as settling surface, so a cone
+        settles faster than a cylinder even standing upright.  Turn it off to
+        get tilt-only behaviour.
     """
 
     model: str = "pnk"
     efficiency: float = 0.08
     max_enhancement: float = 10.0
     constant_factor: float = 1.0
+    walls: bool = True
 
     def __post_init__(self) -> None:
         if self.model not in ("pnk", "none", "constant"):
@@ -69,7 +91,8 @@ class BoycottModel:
         if self.max_enhancement < 1.0:
             raise ValueError("max_enhancement must be at least 1")
 
-    def factor(self, tilt_deg: float, suspension_length: float, gap: float) -> float:
+    def factor(self, tilt_deg: float, suspension_length: float, gap: float,
+               wall_projection: float = 0.0, area: float = 0.0) -> float:
         """Multiplier on the axial settling velocity [-].
 
         Parameters
@@ -79,15 +102,26 @@ class BoycottModel:
         suspension_length:
             Current axial length of the still-suspended column [m].
         gap:
-            Characteristic inner diameter of that column [m].
+            Characteristic hydraulic diameter of that column [m].
+        wall_projection:
+            Horizontal projection of the inclined walls inside the suspended
+            column [m^2].  Zero for a straight tube.
+        area:
+            Flow area where the boundary currently sits [m^2], which is what
+            converts a production rate into a boundary speed.
         """
         theta = math.radians(tilt_deg)
         if self.model == "constant":
             return float(self.constant_factor)
-        cos_t = math.cos(theta)
-        if self.model == "none" or tilt_deg == 0.0:
-            return max(cos_t, 0.0)
-        if gap <= 0.0 or suspension_length <= 0.0:
-            return max(cos_t, 0.0)
-        side = self.efficiency * 4.0 * suspension_length * abs(math.sin(theta)) / (math.pi * gap)
-        return float(min(max(cos_t, 0.0) + side, self.max_enhancement))
+        cos_t = max(math.cos(theta), 0.0)
+        if self.model == "none":
+            return cos_t
+
+        projected = 0.0
+        if gap > 0.0 and suspension_length > 0.0:
+            projected += 4.0 * suspension_length * abs(math.sin(theta)) / (math.pi * gap)
+        if self.walls and wall_projection > 0.0 and area > 0.0:
+            projected += wall_projection / area
+        if projected <= 0.0:
+            return cos_t
+        return float(min(cos_t + self.efficiency * projected, self.max_enhancement))

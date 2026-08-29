@@ -28,7 +28,12 @@
 
   <div class="stage">
     <section class="panel tube-panel">
-      <h2 class="panel-title">The tube <em id="tube-volume"></em></h2>
+      <h2 class="panel-title">
+        The tube <em id="tube-volume"></em>
+        <button class="toggle" id="flow-toggle" type="button" aria-pressed="true">
+          <span>Flow on</span>
+        </button>
+      </h2>
       <canvas id="tube-canvas" role="img"
               aria-label="Cross-section of the tube, shaded by red-cell volume fraction"></canvas>
       <div class="clock">
@@ -54,6 +59,18 @@
         <div class="readout"><dt>Sediment</dt><dd id="sediment">—</dd></div>
         <div class="readout"><dt>Katz index</dt><dd id="katz">—</dd></div>
       </dl>
+      <h2 class="panel-title" style="margin-top:14px">Flow right now</h2>
+      <dl class="readouts">
+        <div class="readout"><dt>Cells falling</dt><dd id="flow-cells">—</dd></div>
+        <div class="readout"><dt>Plasma rising</dt><dd id="flow-plasma">—</dd></div>
+        <div class="readout"><dt>Boycott boost</dt><dd id="flow-boost">—</dd></div>
+      </dl>
+      <p class="note" style="margin-top:10px">
+        Nothing enters or leaves the tube, so the plasma displaced by the falling cells has
+        to come back up past them: <em>φ·v<sub>cells</sub> = (1−φ)·v<sub>plasma</sub></em> at
+        every height. Both speeds are read from the solved field, not drawn on. Playback runs
+        at 900× — two hours in eight seconds.
+      </p>
     </section>
   </div>
 
@@ -61,6 +78,31 @@
     <div>
       <h2 class="panel-title">Tube shape</h2>
       <div class="chips" id="geometry-chips"></div>
+      <p class="note error" id="geometry-error" role="status"></p>
+    </div>
+
+    <div id="cone-controls" class="subpanel" hidden>
+      <h2 class="panel-title">Cone in cone <em>a lamella settler</em></h2>
+      <div class="slider">
+        <div class="slider-head">
+          <label for="cone-angle">Cone angle</label>
+          <output id="cone-angle-out" for="cone-angle">12°</output>
+        </div>
+        <input type="range" id="cone-angle" min="0" max="35" step="1" value="12">
+      </div>
+      <div class="slider">
+        <div class="slider-head">
+          <label for="cone-gap">Gap between the cones</label>
+          <output id="cone-gap-out" for="cone-gap">1.5 mm</output>
+        </div>
+        <input type="range" id="cone-gap" min="4" max="40" step="1" value="15">
+      </div>
+      <p class="note">
+        Blood fills the gap all the way round. Every wall is inclined, so a cell falls only
+        the width of the gap before landing on the outer cone and sliding down, while clear
+        plasma is released under the inner one and rises. That is the Boycott effect without
+        tilting anything — set the angle to zero and it vanishes.
+      </p>
     </div>
 
     <div>
@@ -96,7 +138,8 @@
       <strong>Rouleaux size</strong> stands in for the acute-phase proteins that make red cells
       stack: bigger stacks settle faster, which is what an inflamed sample does.
       <strong>Tilt</strong> is the Boycott effect — three degrees is enough to inflate a reading,
-      which is why a real tube is levelled.
+      which is why a real tube is levelled. The tube leans in the drawing, with the clear layer
+      running up its raised wall and the sediment sliding down the lowered one.
     </p>
   </section>
 
@@ -111,9 +154,13 @@
       drags on the cells near it.
     </p>
     <p class="note" style="margin-top:8px">
-      Solved with finite volumes and the exact Godunov flux — the same code as the Python
-      package, checked against it case by case. For understanding and teaching, not for
-      calibrating a clinical instrument.
+      Any wall that is not vertical is a settling surface, and the model counts its horizontal
+      projection whether it got that way by tilting the tube or by being a cone. The velocity
+      arrows and tracers are the solved field; the two wall layers a tilted tube develops are
+      drawn schematically, because a one-dimensional model resolves the axis and not the
+      width. Solved with finite volumes and the exact Godunov flux — the same code as the
+      Python package, checked against it case by case. For understanding and teaching, not
+      for calibrating a clinical instrument.
     </p>
   </section>
 
