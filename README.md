@@ -93,6 +93,27 @@ tube = FunctionTube(100, lambda z: 4 + 1.6 * np.sin(2 * np.pi * z / 20))
 `severe-inflammation`، `newborn` — یا هر ترکیبی از هماتوکریت، قطر رولو،
 گران‌روی پلاسما و حد تراکم.
 
+## روی گوشی (اندروید)
+
+نسخه‌ی وب تعاملی: همان حل‌گر به JavaScript پورت شده و در مرورگر گوشی اجرا می‌شود.
+لوله را انتخاب می‌کنید، اسلایدرها را می‌کشید و نتیجه بلافاصله به‌روز می‌شود.
+
+```bash
+cd web && python3 -m http.server 8000     # سپس در گوشی: http://<ip-کامپیوتر>:8000
+```
+
+برای نصب روی گوشی: صفحه را در کروم باز کنید و از منو **Add to Home screen** را بزنید.
+با service worker آفلاین هم کار می‌کند. برای انتشار عمومی، workflow آماده‌ی
+`.github/workflows/pages.yml` پوشه‌ی `web/` را روی GitHub Pages منتشر می‌کند
+(کافی است در Settings → Pages منبع را روی GitHub Actions بگذارید).
+
+یک نسخه‌ی تک‌فایلی هم ساخته می‌شود (`python3 web/build_single.py`) که می‌توانید
+`web/dist/standalone.html` را مستقیم به اشتراک بگذارید.
+
+**درستی پورت JS تضمین‌شده است:** `node web/test_sim.mjs` نتایج جاوااسکریپت را با
+مقادیر مرجعِ تولیدشده از مدل پایتون برای ۱۵ حالت مقایسه می‌کند (خطای مجاز ۱e-۴
+برای لوله‌ی قائم) و آزمون‌های حل بسته را هم تکرار می‌کند — ۹۱ بررسی.
+
 ## خروجی‌ها
 
 * `comparison.png` — شکل لوله‌ها + منحنی‌های ته‌نشینی + ESR یک‌ساعته
@@ -170,6 +191,27 @@ Run `bloodsed list` for the built-in tubes, samples and flux laws, and see
 `examples/` for five worked scripts (single tube, geometry comparison, tilted
 tube, custom profiles, hematocrit sweep).
 
+## On a phone
+
+`web/` is an interactive browser build: the same solver ported to JavaScript, so
+it runs on an Android phone with no toolchain. Pick a tube, drag the sliders,
+watch the boundary fall.
+
+```bash
+cd web && python3 -m http.server 8000     # then open http://<your-ip>:8000 on the phone
+node web/test_sim.mjs                     # 91 checks, incl. agreement with the Python model
+python3 web/build_single.py               # -> web/dist/standalone.html, one shareable file
+```
+
+Chrome's **Add to Home screen** installs it; a service worker keeps it working
+offline. `.github/workflows/pages.yml` publishes `web/` to GitHub Pages once
+Pages is set to build from GitHub Actions.
+
+The JavaScript port is held to the Python model by
+`web/make_fixtures.py` -> `web/fixtures.json` -> `node web/test_sim.mjs`: fifteen
+geometry/sample/tilt combinations must agree to 1e-4 for upright tubes, plus the
+same closed-form checks the Python suite runs.
+
 ## How it works
 
 Kynch's conservation law for batch sedimentation, extended with a variable
@@ -200,6 +242,8 @@ bloodsed/
 docs/physics.md   the model, its verification and its limits
 examples/         five runnable scripts and a scenario file
 tests/            128 tests, including the closed-form checks
+web/              browser build: sim.js (the solver), app.js (the instrument),
+                  PWA manifest and service worker, cross-language tests
 ```
 
 ## Licence

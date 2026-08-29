@@ -1,0 +1,142 @@
+{
+  "generated_by": "web/make_fixtures.py",
+  "n_cells": 400,
+  "duration_h": 2.0,
+  "cases": [
+    {
+      "geometry": "westergren",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 6.242061452180842,
+      "esr_2h": 13.05153683078819,
+      "sediment_mm": 6.194874272947329,
+      "mass_error": 2.3966129869730187e-16
+    },
+    {
+      "geometry": "wintrobe",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 6.277546778193865,
+      "esr_2h": 13.125761786944814,
+      "sediment_mm": 6.470909769739638,
+      "mass_error": 0.0
+    },
+    {
+      "geometry": "micro",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 5.821585673140089,
+      "esr_2h": 12.172393296516246,
+      "sediment_mm": 6.046709076181665,
+      "mass_error": 4.12639977095751e-16
+    },
+    {
+      "geometry": "funnel",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 5.739565909836125,
+      "esr_2h": 10.77110991756891,
+      "sediment_mm": 6.221849707542755,
+      "mass_error": 0.0
+    },
+    {
+      "geometry": "inverted-funnel",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 8.3925038911358,
+      "esr_2h": 25.42985959228647,
+      "sediment_mm": 6.201215090890183,
+      "mass_error": 2.0205257862382454e-16
+    },
+    {
+      "geometry": "hourglass",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 5.197161791323762,
+      "esr_2h": 8.906918202986253,
+      "sediment_mm": 6.0794573787848245,
+      "mass_error": 2.0205257835672173e-16
+    },
+    {
+      "geometry": "bulb",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 6.250518326103488,
+      "esr_2h": 18.638579571715606,
+      "sediment_mm": 6.19460979497463,
+      "mass_error": 2.3390073647489244e-16
+    },
+    {
+      "geometry": "stepped",
+      "blood": "normal",
+      "tilt_deg": 0.0,
+      "esr_1h": 6.40783712476739,
+      "esr_2h": 13.389886563290071,
+      "sediment_mm": 5.953595901239656,
+      "mass_error": 2.4480214348774917e-16
+    },
+    {
+      "geometry": "westergren",
+      "blood": "anemic",
+      "tilt_deg": 0.0,
+      "esr_1h": 37.371893389911705,
+      "esr_2h": 78.14105556452394,
+      "sediment_mm": 23.69121065781399,
+      "mass_error": 1.9258497216747472e-16
+    },
+    {
+      "geometry": "westergren",
+      "blood": "inflammation",
+      "tilt_deg": 0.0,
+      "esr_1h": 33.32663531919558,
+      "esr_2h": 63.55138866328316,
+      "sediment_mm": 29.801881808853178,
+      "mass_error": 5.392379220689295e-16
+    },
+    {
+      "geometry": "westergren",
+      "blood": "polycythemic",
+      "tilt_deg": 0.0,
+      "esr_1h": 0.5801177214749265,
+      "esr_2h": 1.212967393131481,
+      "sediment_mm": 0.7913583769817711,
+      "mass_error": 0.0
+    },
+    {
+      "geometry": "westergren",
+      "blood": "severe-inflammation",
+      "tilt_deg": 0.0,
+      "esr_1h": 83.80812808429826,
+      "esr_2h": 96.11698017067286,
+      "sediment_mm": 82.61237475881303,
+      "mass_error": 1.5406797773397977e-16
+    },
+    {
+      "geometry": "westergren",
+      "blood": "normal",
+      "tilt_deg": 3.0,
+      "esr_1h": 8.812040743687522,
+      "esr_2h": 18.226196573846387,
+      "sediment_mm": 8.834546577553317,
+      "mass_error": 1.1983064934865093e-16
+    },
+    {
+      "geometry": "westergren",
+      "blood": "normal",
+      "tilt_deg": 15.0,
+      "esr_1h": 18.29838686725799,
+      "esr_2h": 36.29225611054604,
+      "sediment_mm": 18.091417140030632,
+      "mass_error": 0.0
+    },
+    {
+      "geometry": "hourglass",
+      "blood": "inflammation",
+      "tilt_deg": 15.0,
+      "esr_1h": 27.325960886663392,
+      "esr_2h": 53.72011360447198,
+      "sediment_mm": 53.4555010383483,
+      "mass_error": 0.0
+    }
+  ]
+}

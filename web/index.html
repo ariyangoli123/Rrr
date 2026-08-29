@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sedimentation Bench</title>
+<meta name="description" content="Blood sedimentation (ESR) simulated live in tubes of different geometry.">
+<meta name="theme-color" content="#e9edec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1417" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="app">
+
+  <header class="masthead">
+    <h1 class="wordmark">Sedimentation Bench<span>erythrocyte settling, simulated</span></h1>
+    <div class="reading">
+      <div class="reading-value" id="reading-value" aria-live="polite">0.0<small>mm</small></div>
+      <div class="reading-label">ESR at 1 hour</div>
+    </div>
+  </header>
+
+  <div class="stage">
+    <section class="panel tube-panel">
+      <h2 class="panel-title">The tube <em id="tube-volume"></em></h2>
+      <canvas id="tube-canvas" role="img"
+              aria-label="Cross-section of the tube, shaded by red-cell volume fraction"></canvas>
+      <div class="clock">
+        <button class="play" id="play" type="button" aria-label="Play the settling">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path id="play-icon" d="M3 1.5 L13 8 L3 14.5 Z"/></svg>
+        </button>
+        <input type="range" id="scrub" min="0" max="1" value="0" step="1" aria-label="Time">
+        <span class="clock-time" id="clock-time">0 min</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Settling curve <em>boundary against time</em></h2>
+      <canvas id="chart-canvas" role="img"
+              aria-label="How far the plasma boundary has fallen against time"></canvas>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Readings</h2>
+      <dl class="readouts">
+        <div class="readout"><dt>ESR at 2 h</dt><dd id="esr-2h">—</dd></div>
+        <div class="readout"><dt>Peak rate</dt><dd id="peak-rate">—</dd></div>
+        <div class="readout"><dt>Sediment</dt><dd id="sediment">—</dd></div>
+        <div class="readout"><dt>Katz index</dt><dd id="katz">—</dd></div>
+      </dl>
+    </section>
+  </div>
+
+  <section class="panel controls">
+    <div>
+      <h2 class="panel-title">Tube shape</h2>
+      <div class="chips" id="geometry-chips"></div>
+    </div>
+
+    <div>
+      <h2 class="panel-title">Sample</h2>
+      <div class="chips samples" id="sample-chips"></div>
+    </div>
+
+    <div class="slider">
+      <div class="slider-head">
+        <label for="hematocrit">Haematocrit</label>
+        <output id="hematocrit-out" for="hematocrit">45 %</output>
+      </div>
+      <input type="range" id="hematocrit" min="15" max="70" step="1" value="45">
+    </div>
+
+    <div class="slider">
+      <div class="slider-head">
+        <label for="aggregate">Rouleaux size</label>
+        <output id="aggregate-out" for="aggregate">60 µm</output>
+      </div>
+      <input type="range" id="aggregate" min="20" max="200" step="5" value="60">
+    </div>
+
+    <div class="slider">
+      <div class="slider-head">
+        <label for="tilt">Tilt from vertical</label>
+        <output id="tilt-out" for="tilt">0°</output>
+      </div>
+      <input type="range" id="tilt" min="0" max="30" step="1" value="0">
+    </div>
+
+    <p class="note">
+      <strong>Rouleaux size</strong> stands in for the acute-phase proteins that make red cells
+      stack: bigger stacks settle faster, which is what an inflamed sample does.
+      <strong>Tilt</strong> is the Boycott effect — three degrees is enough to inflate a reading,
+      which is why a real tube is levelled.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">What is being solved</h2>
+    <p class="note">
+      Cell volume is conserved in a tube whose cross-section <em>A(z)</em> varies along its
+      length, so the shape of the tube enters the physics: where the bore narrows downward the
+      suspension concentrates and slows, where it widens the suspension is diluted and the
+      boundary accelerates, and a throat throttles the whole column. Hindered settling follows
+      Richardson–Zaki with a packing limit; rouleaux take a few minutes to form; the tube wall
+      drags on the cells near it.
+    </p>
+    <p class="note" style="margin-top:8px">
+      Solved with finite volumes and the exact Godunov flux — the same code as the Python
+      package, checked against it case by case. For understanding and teaching, not for
+      calibrating a clinical instrument.
+    </p>
+  </section>
+
+  <footer class="colophon note">
+    <span>bloodsed</span>
+    <a href="https://github.com/ariyangoli123/Rrr">source and physics notes</a>
+  </footer>
+
+</main>
+<script type="module" src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>

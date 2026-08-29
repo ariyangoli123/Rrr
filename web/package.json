@@ -1,0 +1,6 @@
+{
+  "name": "bloodsed-web",
+  "private": true,
+  "type": "module",
+  "description": "Browser port of the bloodsed sedimentation solver"
+}
