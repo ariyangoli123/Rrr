@@ -7,7 +7,6 @@ import pytest
 from esrsim.core import benchmark as bench
 from esrsim.core import geometry as geo
 from esrsim.tiers import Tier
-from tests.conftest import require_measured
 
 
 def test_plain_tube_equivalent_is_714mm_and_LD_701() -> None:
@@ -93,7 +92,7 @@ def test_benchmark_reports_both_references() -> None:
     assert result.get("cone_over_plain_tilted") is not None
 
 
-def test_plain_tube_E_is_measured_not_predicted(sample_001: dict) -> None:
+def test_plain_tube_E_is_measured_not_predicted(sample_001: dict, require_measured) -> None:
     """GATED: the control run does not exist (M04 / U12).
 
     When it is committed, this test becomes the check that the measured plain-tube E

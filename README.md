@@ -74,7 +74,7 @@ Result(name='E_empirical', ..., tier=<Tier.EXTRAPOLATED>, flags=('N_EQUALS_1',
 
 ```bash
 pip install -e ".[dev]"
-pytest            # 341 passed, 4 skipped — 95% coverage
+pytest            # 342 passed, 4 skipped — 95% coverage
 ```
 
 Python 3.11+. Depends on numpy, scipy, pydantic and pyyaml — that is all. Charts are

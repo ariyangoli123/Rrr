@@ -39,7 +39,20 @@ def declared_gaps() -> dict[str, Any]:
     return {m.id: m for m in missing_data()}
 
 
-def require_measured(sample: dict, path: str, test_id: str) -> Any:
+@pytest.fixture(scope="session")
+def require_measured():
+    """The data gate, as a fixture.
+
+    It is a fixture rather than an importable function on purpose: a test module doing
+    ``from tests.conftest import ...`` only resolves when the repository root happens to
+    be on sys.path, which ``python -m pytest`` provides and the bare ``pytest`` console
+    script does not. That difference is invisible locally and breaks CI, so the import
+    is removed entirely.
+    """
+    return _require_measured
+
+
+def _require_measured(sample: dict, path: str, test_id: str) -> Any:
     """Return the recorded value at ``path``, or skip with the registered reason.
 
     Fails — rather than skips — if the value is absent and the gap is not declared in

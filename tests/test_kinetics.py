@@ -16,7 +16,6 @@ from esrsim.core import geometry as geo
 from esrsim.core import kinetics as kin
 from esrsim.core import readout as ro
 from esrsim.tiers import Tier
-from tests.conftest import require_measured
 
 T090 = geo.from_library("T090")
 T060 = geo.from_library("T060")
@@ -171,7 +170,7 @@ def test_haze_is_biological_not_geometric() -> None:
     assert record["spread_predicted_percent"] == 225
 
 
-def test_haze_spread_is_12_percent(sample_001: dict) -> None:
+def test_haze_spread_is_12_percent(sample_001: dict, require_measured) -> None:
     """Spec §10. GATED: per-tube haze durations are not in the record (M03)."""
     per_tube = require_measured(
         sample_001, "haze.spread_per_tube",
@@ -263,7 +262,7 @@ def test_sensitivity_disagrees_with_the_record(sample_001: dict) -> None:
     assert abs(model[40] - recorded[40]) > 0.15, "and at ESR 40"
 
 
-def test_sample1_heights_at_fixed_times(sample_001: dict) -> None:
+def test_sample1_heights_at_fixed_times(sample_001: dict, require_measured) -> None:
     """Spec §10. GATED: the 10/15/20/30/45 min height table is not in the repo (M01)."""
     table = require_measured(
         sample_001, "raw_trace.heights_at_fixed_times_min",
@@ -275,7 +274,7 @@ def test_sample1_heights_at_fixed_times(sample_001: dict) -> None:
         assert got.value == pytest.approx(float(expected), abs=1.5), t_min
 
 
-def test_range_consumption_89_to_91_percent(sample_001: dict) -> None:
+def test_range_consumption_89_to_91_percent(sample_001: dict, require_measured) -> None:
     """Spec §10 and §5.5. GATED: sample 1's final height is not recorded (M02)."""
     final_height = require_measured(
         sample_001, "range_consumption.final_height_mm",

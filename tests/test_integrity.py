@@ -267,6 +267,26 @@ def test_mixing_never_returns_a_fitted_threshold() -> None:
         assert verdict["mixing_passes"].tier is Tier.UNKNOWN, clearance
 
 
+def test_no_test_module_imports_from_the_tests_package() -> None:
+    """`from tests.x import y` resolves only when the repo root is on sys.path.
+
+    `python -m pytest` puts it there; the bare `pytest` console script does not. The
+    difference is invisible locally and breaks CI, which is exactly how it got in.
+    Shared helpers belong in conftest fixtures, which pytest discovers without imports.
+    """
+    from pathlib import Path
+
+    offenders = [
+        f"{path.name}:{i}"
+        for path in sorted(Path(__file__).parent.glob("test_*.py"))
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if line.startswith(("from tests.", "import tests"))
+    ]
+    assert not offenders, (
+        "these lines only work under `python -m pytest`: " + ", ".join(offenders)
+    )
+
+
 def test_missing_experimental_data_is_declared() -> None:
     """Every data-gated test must have a registered gap that names what closes it.
 
