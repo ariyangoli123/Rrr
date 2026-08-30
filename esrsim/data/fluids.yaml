@@ -1,0 +1,96 @@
+# Fluid library — ESR_SIMULATOR_SPEC.md §3 and addendum §C.
+#
+# Densities are kg/m^3, surface tension N/m, viscosity Pa.s, yield stress Pa (SI:
+# these feed the SI-internal physics, see esrsim/units.py).
+#
+# Every entry carries its own tier. Nothing here is EXACT except the water constants
+# and the definitions derived from them.
+
+meta:
+  source: ESR_SIMULATOR_SPEC.md §3, addendum §C
+  gravity_m_s2: 9.81
+
+fluids:
+  water:
+    label: "water at 25 C"
+    rho: {value: 997.0, unit: "kg/m^3", tier: EXACT, source: "CRC"}
+    sigma: {value: 0.0720, unit: "N/m", tier: EXACT, source: "CRC, 25 C"}
+    mu_high_shear: {value: 0.00089, unit: "Pa.s", tier: EXACT, source: "CRC, 25 C"}
+    mu_low_shear: {value: 0.00089, unit: "Pa.s", tier: EXACT, source: "Newtonian"}
+    tau_y: {value: 0.0, unit: "Pa", tier: EXACT, source: "Newtonian"}
+    delta_cos_theta:
+      value: 0.10
+      unit: ""
+      tier: ESTIMATED
+      source: "spec §3"
+
+  blood_fresh:
+    label: "fresh whole blood, Hct 0.45"
+    rho: {value: 1059.0, unit: "kg/m^3", tier: ESTIMATED, source: "literature, Hct 45"}
+    sigma: {value: 0.0559, unit: "N/m", tier: ESTIMATED, source: "literature"}
+    mu_high_shear: {value: 0.0045, unit: "Pa.s", tier: ESTIMATED, source: "literature"}
+    mu_low_shear:
+      value: 0.040
+      unit: "Pa.s"
+      tier: ESTIMATED
+      source: "literature; rouleaux-dominated. Addendum §C brackets 0.020-0.100."
+    tau_y:
+      value: 0.010
+      unit: "Pa"
+      tier: ESTIMATED
+      source: "literature. Addendum §C brackets 0.005-0.015."
+    delta_cos_theta:
+      value: 0.14
+      unit: ""
+      tier: CALIBRATED
+      source: "back-fitted from observed blood-line unevenness in the cone experiment"
+      conflict:
+        with: 0.41
+        from: "lamella experiment"
+        unknown_id: U07
+        note: "CONTRADICTORY — spec §3 flags that these two numbers do not agree."
+
+  blood_aged_2w:
+    label: "2-week-old whole blood, room temperature"
+    rho: {value: 1050.0, unit: "kg/m^3", tier: ESTIMATED, source: "spec §3"}
+    sigma:
+      value: 0.0480
+      unit: "N/m"
+      tier: ESTIMATED
+      source: "NOT MEASURED. Haemolysis -> free haemoglobin + surface-active lipid
+               fragments. Direction is certain, magnitude is not (addendum §C)."
+      unknown_id: U06
+    mu_high_shear: {value: 0.0055, unit: "Pa.s", tier: ESTIMATED, source: "addendum §C, 5-6 mPa.s"}
+    mu_low_shear:
+      value: 0.009
+      unit: "Pa.s"
+      tier: ESTIMATED
+      source: "addendum §C, 6-12 mPa.s; rouleaux do not form"
+    tau_y: {value: 0.0, unit: "Pa", tier: ESTIMATED, source: "addendum §C, ~0"}
+    delta_cos_theta:
+      value: 0.14
+      unit: ""
+      tier: ESTIMATED
+      source: "assumed equal to fresh blood; not measured"
+
+# Addendum §C: the mixing evidence base. Printed by every mixing report.
+mixing_validation_gap:
+  validated_with: [water, blood_aged_2w]
+  not_validated_with: [blood_fresh]
+  what_was_never_probed:
+    - "rouleaux network"
+    - "fresh protein adsorption"
+  argument_offered: >
+    Water is the hardest case for surface tension and it passed; fresh blood falls
+    between water and aged blood on the driver/barrier ratio.
+  why_that_is_not_enough: >
+    Bulk yield stress is negligible (1.4 Pa against 519 Pa driver) but in a micron-thick
+    wall film it rises by several orders of magnitude. The argument covers surface
+    tension only, not the rouleaux network.
+  decisive_test: >
+    Fresh blood under 4 hours old, with 2-3 minutes of rest before the first inversion.
+    rest_before_mixing_s has never been controlled in any run to date and is a
+    mandatory field from now on.
+  hard_rule: >
+    Blood over 240 minutes old is not admissible for any ESR measurement. Such a
+    record is REJECTED, not warned about.

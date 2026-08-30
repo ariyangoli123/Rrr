@@ -1,0 +1,135 @@
+# Tube library — ESR_SIMULATOR_SPEC.md §2.3 and v1.1 addendum §A.
+#
+# CONSTRUCTION RULE (reverse-engineered from the published table and verified to 4 dp
+# for all six tubes — see tests/test_geometry.py::test_tube_library_reproduces_all_dimensions_to_4dp):
+#
+#   The family was cut under the Gen-A convention:
+#       D_outer(x_mouth) = 5.000 mm          (fixed mouth diameter)
+#       x_bl = x_mouth + 3.000 mm            (blood line 3 mm below the mouth)
+#   hence
+#       x_bl = 2.5 / tan(theta_o) + 3.000
+#   and theta_o is the root of V(theta_o) = V_target for the given gap.
+#
+#   Gen-B (current, addendum §A) keeps the *same cone* and moves the mouth down onto
+#   the blood line: mouth diameter becomes D_outer(x_bl), cone body 50.000 mm, straight
+#   cylinder above. Only `generation` changes; theta and x_bl do not.
+#
+# theta values below are the published 3-decimal values. They reproduce every published
+# dimension to 4 dp, so they are used as-is rather than re-solved.
+#
+# DRIVING vs DERIVED (addendum §A): diameters must be driven from the small end.
+# `gap`, `theta_o`, `theta_i`, `x_bl` are DRIVING. `D_base` is DERIVED and must never
+# be used as a manufacturing input.
+
+meta:
+  source: ESR_SIMULATOR_SPEC.md §2.3, addendum §A
+  tier: EXACT
+  column_length_mm: 50.0
+  gen_a_mouth_diameter_mm: 5.000
+  gen_a_blood_line_offset_mm: 3.000
+
+tubes:
+  T090:
+    gap_mm: 0.90
+    theta_o_deg: 9.973
+    theta_i_deg: 9.973
+    generation: B
+    volume_target_mm3: 2000.0
+    published:
+      delta_mm: 5.1968
+      d_bloodline_mm: 6.0550
+      d_inner_bloodline_mm: 4.2274
+      clearance_mm: 0.9140
+      d_base_mm: 23.6392
+      volume_mm3: 2000.0
+    notes:
+      - "Reference tube. Mixing passes at clearance 0.914 (spec §4.3)."
+      - "Rod variant D=3.0 mm confirmed experimentally (spec §2.4c)."
+
+  T080:
+    gap_mm: 0.80
+    theta_o_deg: 11.518
+    theta_i_deg: 11.518
+    generation: B
+    volume_target_mm3: 2000.0
+    published:
+      delta_mm: 4.0065
+      d_bloodline_mm: 6.2227
+      d_inner_bloodline_mm: 4.5898
+      clearance_mm: 0.8163
+      d_base_mm: 26.6006
+      volume_mm3: 2000.0
+
+  T070:
+    gap_mm: 0.70
+    theta_o_deg: 13.466
+    theta_i_deg: 13.466
+    generation: B
+    volume_target_mm3: 2000.0
+    published:
+      delta_mm: 3.0060
+      d_bloodline_mm: 6.4367
+      d_inner_bloodline_mm: 4.9971
+      clearance_mm: 0.7198
+      d_base_mm: 30.3818
+      volume_mm3: 2000.0
+    notes:
+      - "Gen-B + stepped upper cone: blood line flat after repeated mixing AND good
+         mixing, with water and with 2-week-old blood (addendum §B). First design to
+         solve both problems at once."
+
+  T060:
+    gap_mm: 0.60
+    theta_o_deg: 15.970
+    theta_i_deg: 15.970
+    generation: B
+    volume_target_mm3: 2000.0
+    published:
+      delta_mm: 2.1808
+      d_bloodline_mm: 6.7171
+      d_inner_bloodline_mm: 5.4689
+      clearance_mm: 0.6241
+      d_base_mm: 35.3350
+      volume_mm3: 2000.0
+    notes:
+      - "Half of the decisive collinearity experiment (spec §9.3): compare against
+         T060 with the inner cone shifted 2 mm (gap 1.150) at the same 15.970 deg."
+
+  T050:
+    gap_mm: 0.50
+    theta_o_deg: 16.232
+    theta_i_deg: 16.232
+    generation: B
+    volume_target_mm3: 1700.0
+    outside_isovolume_family: true
+    published:
+      delta_mm: 1.7887
+      d_bloodline_mm: 6.7468
+      d_inner_bloodline_mm: 5.7053
+      clearance_mm: 0.5208
+      d_base_mm: 35.8601
+      volume_mm3: 1700.0
+    notes:
+      - "1.7 cc, NOT 2.0 cc. Spec §2.3 warning: must not be compared directly with the
+         rest of the family."
+
+  TAPER:
+    gap_mm: 0.50            # gap at the blood line; opens to 0.90 at the base
+    gap_base_mm: 0.90
+    theta_o_deg: 12.520
+    theta_i_deg: 12.072
+    generation: B
+    volume_target_mm3: 2000.0
+    tapered: true
+    published:
+      delta_mm: 1.8488
+      d_bloodline_mm: 6.3324
+      d_inner_bloodline_mm: 5.3080
+      clearance_mm: 0.5122
+      d_base_mm: 28.5385
+      volume_mm3: 2000.0
+    notes:
+      - "Gap opens 0.40 mm over the 50 mm column: (tan theta_o - tan theta_i)*cos theta_o
+         = 0.008074 mm/mm."
+      - "Measured base gap 0.923 vs nominal 0.900; 3000-grit polishing opens the gap
+         1-4 percent (spec §G.6)."

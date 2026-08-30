@@ -1,0 +1,71 @@
+# Missing-data register.
+#
+# Spec §10 mandates regression tests against sample 1's raw trace. That trace is not in
+# this repository, and the 10/15/20/30/45-minute height table it refers to does not
+# appear in the spec either. Rather than invent numbers (spec §0: "no output without a
+# label"; a fabricated trace could only be labelled CALIBRATED, which would be a lie),
+# each gap is declared here.
+#
+# tests/test_integrity.py::test_missing_experimental_data_is_declared asserts that every
+# data-gated test in the suite has an entry here. Nothing skips silently.
+
+meta:
+  source: "ESR_SIMULATOR_SPEC.md §10 vs. repository contents"
+  policy: >
+    A gated test skips only if its gap is declared here with a `closes_with` field. A
+    gated test whose gap is NOT declared fails. Supplying the referenced file turns the
+    skip into a hard assertion with no code change.
+
+missing:
+  - id: M01
+    name: sample_001_raw_trace
+    needed_by:
+      - tests/test_kinetics.py::test_sample1_heights_at_fixed_times
+    expected_path: esrsim/data/samples/sample_001.csv
+    what_it_is: >
+      Chronometer lap record for sample 1: boundary height against time from tube
+      placement, one row per lap, no smoothing.
+    why_absent: "Not present in the repository; not reproduced in the spec."
+    closes_with: >
+      Commit the raw chronometer CSV to esrsim/data/samples/sample_001.csv with the
+      mandatory header fields (see esrsim/calibration/ingest.py::MANDATORY_FIELDS).
+
+  - id: M02
+    name: sample_001_final_height
+    needed_by:
+      - tests/test_kinetics.py::test_range_consumption_89_to_91_percent
+    what_it_is: >
+      The final (two-hour) packed boundary height for sample 1, needed to check the
+      predicted range ceiling against 89-91 percent consumption.
+    why_absent: "Spec §5.5 states the acceptance band but not the measured height."
+    closes_with: >
+      Add `final_height_mm` and `readout_time_min` to
+      esrsim/data/measured/sample_001.yaml.
+
+  - id: M03
+    name: haze_onset_across_the_set
+    needed_by:
+      - tests/test_kinetics.py::test_haze_spread_is_12_percent
+    what_it_is: >
+      Haze-phase duration for each tube in the set. Spec §5.3 reports a 12 percent
+      spread against a predicted 2.25x speed difference, but lists only one value
+      (8.43 min at ESR 13).
+    why_absent: "Only one of the set's haze durations appears in the spec."
+    closes_with: >
+      Add `haze_min` per tube under `observations.haze` in
+      esrsim/data/measured/sample_001.yaml.
+
+  - id: M04
+    name: plain_tube_control_run
+    needed_by:
+      - tests/test_benchmark.py::test_plain_tube_E_is_measured_not_predicted
+    unknown_id: U12
+    what_it_is: >
+      Measured E for a plain 7.14 x 50 mm tube at 0, 10 and 20 degrees.
+    why_absent: "Never run. Addendum §D: the most important unmeasured quantity here."
+    closes_with: >
+      Add `E_measured` per angle under `plain_tube` in
+      esrsim/data/measured/benchmark_control.yaml.
+    consequence: >
+      Until then benchmark ratios compare a measurement against a PNK prediction, and
+      esrsim.core.benchmark labels the plain-tube column accordingly on every call.
