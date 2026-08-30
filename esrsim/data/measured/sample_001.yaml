@@ -1,0 +1,109 @@
+# Recorded observations for sample 1.
+#
+# THE WHOLE DATASET IS n = 1. Every kinetics output in this package states that.
+#
+# What is here is what the project record actually reports. Fields the record does not
+# give are `null` — empty means NOT MEASURED, never zero (spec §8.3). Fields that are
+# null and needed by a test are declared in ../missing_data.yaml.
+
+meta:
+  sample_id: sample_001
+  source: "ESR_SIMULATOR_SPEC.md §5.2 validation table, §5.3, §5.5, §7.2, addendum §D"
+  n_samples: 1
+  tier: CALIBRATED
+  caveat: >
+    n = 1. Three tubes, one blood sample, one operator, one session. No repeat, no
+    second sample, no inter-operator term. Every fit below has as many free parameters
+    as it has degrees of freedom to spare.
+
+# Pre-analytical fields the ingest layer requires. Null = not recorded.
+preanalytical:
+  hematocrit: null
+  temperature_c: null
+  draw_time: null
+  operator: null
+  sample_age_min: null
+  rest_before_mixing_s: null      # never controlled in any run to date (addendum §C)
+  fill_method: null
+
+# --- Enhancement factor, measured against a vertical Westergren reference -----------
+# Spec §5.2 mandatory validation table.
+enhancement:
+  reference: "vertical Westergren"
+  tier: CALIBRATED
+  entries:
+    - tube: T090
+      theta_deg: 9.973
+      gap_mm: 0.90
+      L_over_d: 55.556
+      E_measured: 3.15
+    - tube: TAPER
+      theta_deg: 12.520
+      gap_mm: 0.70          # mean gap; the taper runs 0.50 -> 0.90
+      L_over_d: 71.429
+      E_measured: 3.75
+    - tube: T060
+      theta_deg: 15.970
+      gap_mm: 0.60
+      L_over_d: 83.333
+      E_measured: 3.90
+  collinearity:
+    pearson_r_L_over_d_vs_sin_theta: 0.986
+    consequence: >
+      L/d and sin(theta) cannot be separated in this set. Any coefficient attributed to
+      one of them could belong to the other. Unknown U04.
+
+# --- Haze (lag) phase ---------------------------------------------------------------
+haze:
+  tier: CALIBRATED
+  status: DISPUTED           # unknown U03
+  entries:
+    - esr_mm_h: 13
+      haze_min: 8.43
+      note: "spec §G.5"
+    - esr_mm_h: 8
+      haze_min: null
+      note: "record says 'no haze'; this contradicts the two-point law. Unknown U03."
+  height_at_readable_mm: 4.0
+  law: "lag(ESR) = max(1.5, 14.5 - 5.85*log10(ESR))"
+  law_fitted_from: 2         # two historical points
+  spread_across_set_percent: 12
+  spread_predicted_percent: 225
+  spread_per_tube: null      # NOT RECORDED -> missing_data M03
+  conclusion: "The haze phase is biological, not geometric (spec §5.3)."
+
+# --- Range consumption --------------------------------------------------------------
+range_consumption:
+  tier: CALIBRATED
+  acceptance_band_percent: [89, 91]
+  final_height_mm: null      # NOT RECORDED -> missing_data M02
+  readout_time_min: null
+  tube: T090
+
+# --- Readout sensitivity, T090 at the 15-minute readout -----------------------------
+# Spec §7.2 validation table and addendum §E. These are recorded numbers; the
+# volumetric model does not reproduce them (unknown U10) and the error-budget report
+# prints both columns side by side.
+readout_sensitivity:
+  tube: T090
+  readout_time_min: 15
+  tier: CALIBRATED
+  entries:
+    - esr_mm_h: 13
+      dh_dESR: 0.83
+      esr_error_per_level_shift_mm: {1.0: 0.6, 2.0: 1.2, 3.0: 1.8, 4.0: 2.4}
+    - esr_mm_h: 20
+      dh_dESR: 0.79
+      esr_error_per_level_shift_mm: {1.0: 0.6, 2.0: 1.3, 3.0: 1.9, 4.0: 2.5}
+    - esr_mm_h: 30
+      dh_dESR: 0.60
+      esr_error_per_level_shift_mm: {1.0: 0.8, 2.0: 1.7, 3.0: 2.5, 4.0: 3.3}
+    - esr_mm_h: 40
+      dh_dESR: 0.28
+      esr_error_per_level_shift_mm: {1.0: 1.8, 2.0: 3.6, 3.0: 5.4, 4.0: 7.1}
+
+# --- Raw trace ----------------------------------------------------------------------
+raw_trace:
+  path: null                 # NOT IN REPOSITORY -> missing_data M01
+  status: NOT_IN_REPO
+  heights_at_fixed_times_min: null    # the 10/15/20/30/45 table of spec §10

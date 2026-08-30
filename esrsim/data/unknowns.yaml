@@ -1,0 +1,159 @@
+# Unknowns register — ESR_SIMULATOR_SPEC.md §11, updated by addendum §G.
+#
+# Every report prints the subset of these that the report's own results depend on.
+# `esrsim report --open-questions` prints all of them with the experiment that closes
+# each one.
+
+meta:
+  source: ESR_SIMULATOR_SPEC.md §11, addendum §G
+  rule: >
+    A result that depends on an unknown may not be presented as a prediction. It is
+    tagged with the weakest tier of its inputs and carries the unknown's id.
+
+unknowns:
+  - id: U01
+    name: phi_pack
+    desc: "Final packing volume fraction of the sediment"
+    status: ASSUMED
+    assumed: 0.90
+    range: [0.85, 0.95]
+    affects: [range_ceiling, saturation, volume_budget, icsh_feasibility]
+    how_to_resolve: "Read the packed sediment height at the two-hour mark"
+    note: >
+      Every range figure in the project rides on this number. Sensitivity over
+      [0.85, 0.95] is reported by default (spec §5.5).
+
+  - id: U02
+    name: mixing_clearance_threshold
+    desc: "Clearance threshold for mixing to pass"
+    status: CONTRADICTORY
+    evidence:
+      0.696: pass
+      0.720: pass
+      0.766: FAIL
+      0.914: pass
+    affects: [mixing_rule_R02, design_explorer]
+    how_to_resolve: "Shift sweep on a single part, 0.5 mm steps"
+    note: >
+      0.696 passes but 0.766 fails. Four points with entangled variables: NO threshold
+      may be fitted. Queries in 0.69-0.77 return UNRESOLVED_CONTRADICTION (spec §4.3).
+
+  - id: U03
+    name: lag_law
+    desc: "Haze-phase duration as a function of ESR"
+    status: DISPUTED
+    evidence:
+      ESR_8: "no haze recorded"
+      ESR_13: "8.43 min haze"
+    affects: [kinetics_lag, readout_fixed_time, delta_h_readout]
+    how_to_resolve: "Three samples with ESR < 10, recording the exact moment the
+                     boundary becomes readable"
+    note: >
+      lag(ESR) = max(1.5, 14.5 - 5.85*log10(ESR)) is fitted to two historical points and
+      the ESR=8 record violates it. Never use a fixed number. Everything that leans on
+      this law is flagged LAG_LAW_DISPUTED (spec §5.3).
+
+  - id: U04
+    name: E_law_gap_dependence
+    desc: "Does the enhancement factor depend on L/d, or only on the tilt angle?"
+    status: UNRESOLVED
+    reason: "collinearity r = 0.986 between L/d and sin(theta) in the available set"
+    affects: [E_models, design_explorer, extrapolation]
+    how_to_resolve: >
+      T060 as cut (gap 0.600, L/d 83.3) against T060 with the inner cone shifted 2 mm
+      (gap 1.150, L/d 43.5) at the same 15.970 deg. PNK predicts E halves (23.9 -> 12.9);
+      the empirical angle-only law predicts no change. Parts are on the bench.
+
+  - id: U05
+    name: Py_phi_and_R_phi
+    desc: "Compressive yield stress and hydraulic resistance of whole blood"
+    status: NOT_MEASURED_WORLDWIDE
+    affects: [continuum_model]
+    how_to_resolve: >
+      Not resolvable with a bench experiment in this project. These two material
+      functions have never been measured for whole blood in the world literature.
+      Any continuum result is RESEARCH_ONLY.
+
+  - id: U06
+    name: sigma_blood_aged
+    desc: "Surface tension of 2-week-old blood"
+    status: ESTIMATED
+    assumed: 0.048
+    affects: [capillary_barrier, mixing_argument]
+    how_to_resolve: "Contact-angle measurement by plate tilting"
+
+  - id: U07
+    name: delta_cos_theta_resin
+    desc: "Contact-angle hysteresis of blood on the printed resin"
+    status: CONTRADICTORY
+    values_conflicting:
+      lamella_experiment: 0.41
+      cone_experiment: 0.14
+    affects: [blood_line_unevenness_model_B]
+    how_to_resolve: >
+      Repeat the hysteresis measurement on the same resin batch and surface finish used
+      for the cones; the two existing numbers came from different geometries.
+
+  - id: U08
+    name: blood_line_unevenness_mechanism
+    desc: "Which mechanism sets blood-line unevenness"
+    status: NEITHER_MODEL_FITS
+    evidence:
+      gap_0.90: "~0 mm"
+      gap_0.60: "~4 mm"
+      gap_0.50: "~3-4 mm"
+    affects: [capillary_unevenness, design_rule_R08]
+    how_to_resolve: >
+      Gap sweep in 0.05 mm steps between 0.60 and 0.90 to establish whether the
+      transition is a step or a slope.
+    note: >
+      The observations are a STEP; both candidate models (eccentricity, hysteresis) are
+      continuous. Both are reported side by side and neither is selected (spec §4.1).
+
+  - id: U09
+    name: E_time_dependence_peak
+    desc: "When during the run is the enhancement factor at its maximum?"
+    status: MODEL_RECORD_MISMATCH
+    evidence:
+      project_record: "maximum near minute 15"
+      volumetric_model: "plateau from t=0, roll-off only near the range ceiling"
+    affects: [kinetics_descent, readout_sensitivity]
+    how_to_resolve: >
+      A single run with the boundary logged every 30 s for the first 20 minutes, so
+      dh/dt can be differentiated instead of inferred from two endpoints.
+
+  - id: U10
+    name: readout_sensitivity_curve
+    desc: "dh/dESR at the 15-minute readout"
+    status: MODEL_RECORD_MISMATCH
+    evidence:
+      project_record: {13: 0.83, 20: 0.79, 30: 0.60, 40: 0.28}
+      volumetric_model_with_lag: {13: 0.49, 20: 0.54, 30: 0.60, 40: 0.63}
+    affects: [error_budget, icsh_feasibility]
+    how_to_resolve: >
+      Five samples spanning ESR 10-45 in one tube, read at 15 min, with the fill volume
+      controlled to better than 30 mm^3 so the sensitivity is not swamped by level error.
+    note: >
+      The record's sensitivity falls monotonically; the model's rises then falls. They
+      agree only at ESR 30. The error-budget report prints both and flags the mismatch
+      rather than tuning the model onto the record.
+
+  - id: U11
+    name: mixing_transfer_to_fresh_blood
+    desc: "Does the mixing result with water and aged blood carry over to fresh blood?"
+    status: UNTESTED
+    affects: [mixing_rules, device_validation]
+    how_to_resolve: >
+      Fresh blood under 4 hours old with 2-3 minutes rest before the first inversion,
+      rest_before_mixing_s recorded.
+
+  - id: U12
+    name: plain_tube_control
+    desc: "Measured E for a plain 7.14 x 50 mm tube at 0, 10 and 20 degrees"
+    status: NOT_DONE
+    affects: [benchmark, patentability_claims]
+    how_to_resolve: "Run the control tube. Addendum §D calls this the single most
+                     important unmeasured quantity in the project."
+    note: >
+      Until it exists, every E_plain figure is a PNK prediction, not a measurement, and
+      the comparative claim rests on theory on one side only.

@@ -1,0 +1,129 @@
+# Calibrated constants — every one carries its source and its fitted range.
+#
+# Spec §13: "no magic numbers in the code. All of them in YAML."
+# Build prompt: "Every empirical constant carries its source and fitted range as
+# metadata."
+#
+# THE WHOLE DATASET IS n = 1. Three tubes, one blood sample, one session. Every
+# constant below is fitted to those three points, and two of the three predictors are
+# collinear at r = 0.986. Read the `caveat` field before using any of them.
+
+meta:
+  source: ESR_SIMULATOR_SPEC.md §5, addendum §D
+  n_samples: 1
+  n_points: 3
+
+enhancement:
+  # E_empirical(theta) = 1 + a*sin(theta)
+  a_empirical:
+    value: 11.57
+    unit: ""
+    tier: CALIBRATED
+    source: "least-squares fit to the three measured E values of sample 1 (spec §5.2)"
+    fitted_range:
+      theta_deg: [9.973, 15.970]
+    residuals: [0.15, 0.24, -0.28]
+    caveat: >
+      Residuals are concave (+, +, -): E saturates with angle. Extrapolation above
+      16 degrees is not permitted; the program returns EXTRAPOLATION_UNSAFE there.
+
+  # E_saturated(theta, L, d) = cos(theta) + min(L/d, Lambda_eff)*sin(theta)
+  lambda_eff:
+    value: 12.0
+    unit: ""
+    tier: CALIBRATED
+    source: "spec §5.2; the unrounded least-squares value on the same three points is 11.69"
+    fitted_range:
+      theta_deg: [9.973, 15.970]
+      L_over_d: [55.6, 83.3]
+    caveat: >
+      L/d never falls below 55 in the calibration set, so min(L/d, Lambda_eff) always
+      takes Lambda_eff there. The set therefore contains NO information about the L/d
+      dependence — that is unknown U04, and the decisive experiment is on the bench.
+
+  collinearity:
+    pearson_r: 0.986
+    between: [L_over_d, sin_theta]
+    warn_above: 0.9
+    source: "spec §5.2"
+    consequence: >
+      A coefficient attributed to one predictor could belong to the other. The program
+      warns on every call that fits or evaluates an E model.
+
+  extrapolation:
+    theta_deg_max: 16.0
+    source: "spec §5.2: extrapolation above 16 degrees is not permitted"
+
+lag:
+  # lag(ESR) = max(floor, intercept - slope*log10(ESR))
+  law:
+    intercept: 14.5
+    slope: 5.85
+    floor_min: 1.5
+    unit: "min"
+    tier: CALIBRATED
+    source: "spec §5.3, fitted to TWO historical points"
+    fitted_range:
+      esr_mm_h: [8.0, 13.0]
+    status: DISPUTED
+    caveat: >
+      The record says ESR 8 produced no haze while ESR 13 produced 8.43 minutes of it.
+      The first observation violates this law. Never use a fixed number; every output
+      that leans on the law is flagged LAG_LAW_DISPUTED (unknown U03).
+
+  readable_height:
+    value: 4.0
+    unit: "mm"
+    tier: CALIBRATED
+    source: "spec §5.3: the boundary becomes readable at about 4 mm"
+
+  biological_not_geometric:
+    spread_observed_percent: 12
+    spread_predicted_percent: 225
+    source: "spec §5.3"
+    conclusion: >
+      A set whose speeds differ by 2.25x showed only 12 percent difference in haze
+      duration, so the haze phase is biological, not geometric.
+
+descent:
+  # dV_clear/dt = u_s * A_projected(t); see esrsim/core/kinetics.py for the derivation.
+  model: volumetric_pnk
+  tier: CALIBRATED
+  source: "spec §5.4, with Lambda_eff from the enhancement block"
+  hindered_settling_exponent:
+    value: null
+    tier: UNKNOWN
+    note: >
+      Richardson-Zaki n is not fitted anywhere in this project. The descent model uses
+      no hindered-settling correction, which is one reason its sensitivity curve does
+      not match the recorded one (unknown U10).
+
+sediment:
+  phi_pack:
+    value: 0.90
+    range: [0.85, 0.95]
+    unit: ""
+    tier: ESTIMATED
+    source: "spec §5.5, ASSUMED not measured"
+    unknown_id: U01
+
+logistic:
+  # h(t) = H_max / (1 + exp(-k*(t - t_mid)))
+  parameters: [H_max, k, t_mid]
+  tier: CALIBRATED
+  source: "spec §5.1"
+  rules:
+    - "three-parameter only; the four-parameter form diverged and must not be used"
+    - "no smoothing of the raw data, ever"
+
+benchmark:
+  plain_tube:
+    # A_plain = V/L, D_plain = sqrt(4A/pi)
+    source: "addendum §D"
+    tier: ESTIMATED
+    note: >
+      E_plain is a PNK PREDICTION, not a measurement. The control experiment (a plain
+      7.14 x 50 mm tube at 0, 10 and 20 degrees) has never been run: unknown U12,
+      missing datum M04.
+    commercial_tilt_deg: [18.0, 20.0]
+    patent_reference: "US 5,594,164 reports about 3x from tilting alone"
