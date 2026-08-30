@@ -77,8 +77,9 @@ pip install -e ".[dev]"
 pytest            # 299 passed, 4 skipped — 95% coverage
 ```
 
-Python 3.11+. Depends on numpy, scipy, pandas, matplotlib, pydantic and pyyaml. No CFD
-or FEM dependency.
+Python 3.11+. Depends on numpy, scipy, pydantic and pyyaml — that is all. Charts are
+hand-written inline SVG, so reports open offline with no CDN and no plotting library. No
+CFD or FEM dependency.
 
 ---
 

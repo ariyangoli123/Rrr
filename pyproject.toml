@@ -8,11 +8,13 @@ version = "1.1.0"
 description = "Design-analysis toolkit for an accelerated ESR device (conical annular gap, Boycott effect)"
 readme = "README.md"
 requires-python = ">=3.11"
+# Kept deliberately small. The spec's §1 list also named pandas and matplotlib, but
+# this implementation imports neither: charts are hand-written inline SVG (so reports
+# stay offline and dependency-free) and the tabular work is done by the Result/ResultSet
+# types. Adding them back would cost tens of megabytes at install for nothing.
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
-    "pandas>=2.0",
-    "matplotlib>=3.8",
     "pydantic>=2.5",
     "pyyaml>=6.0",
 ]
