@@ -44,6 +44,13 @@ _EXEMPT: dict[str, set[str]] = {
         "assert_no_six_millimetre", "tier_of", "mixing_validation_gap",
     },
     "esrsim.tiers": {"*"},                      # defines the mechanism itself
+    # The API layer serialises Result objects to JSON, so its handlers return dicts by
+    # construction. The tier is not lost — it travels inside the payload — and the real
+    # guarantee for this layer is enforced at the wire by
+    # tests/test_server.py::test_every_value_reaching_the_browser_has_a_tier, which
+    # test_api_layer_has_a_wire_level_tier_check below asserts still exists.
+    "esrsim.server": {"*"},
+    "esrsim.ui": {"*"},                         # one module-level HTML string
     "esrsim.core.geometry": {"from_library", "list_tubes"},
     "esrsim.core.fluid": {"load_fluid", "list_fluids"},
     "esrsim.core.kinetics": {"constants", "logistic", "descent", "height_at"},
@@ -99,6 +106,19 @@ def test_every_output_has_provenance_label() -> None:
     assert not offenders, (
         "public functions returning untagged values:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_api_layer_has_a_wire_level_tier_check() -> None:
+    """esrsim.server is exempted above only because a stricter test covers it.
+
+    If that wire-level test is ever deleted or renamed, the exemption becomes a hole
+    and this fails, rather than the hole opening silently.
+    """
+    from pathlib import Path
+
+    source = Path(__file__).with_name("test_server.py").read_text(encoding="utf-8")
+    assert "def test_every_value_reaching_the_browser_has_a_tier" in source
+    assert 'assert result["tier"]' in source
 
 
 def test_exempt_functions_still_return_tagged_values_where_they_claim_to() -> None:

@@ -9,6 +9,7 @@
     esrsim report    --tube T070 --html out.html
     esrsim rules     T070 --step 0.30 --upper-angle-offset -2
     esrsim unknowns
+    esrsim serve                                 # local web UI in your browser
 
 Build prompt: *"Every report, plot and CLI output shows tiers. No exceptions, no quiet
 mode."* There is deliberately no ``--brief`` or ``--quiet`` flag.
@@ -147,6 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--json", action="store_true", help="STL parameter dict")
 
     sub.add_parser("unknowns", help="the unresolved register")
+
+    sv = sub.add_parser("serve", help="local web UI in your browser")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--host", default="127.0.0.1",
+                    help="loopback by default; anything else is reachable from other "
+                         "machines on your network")
+    sv.add_argument("--no-browser", action="store_true",
+                    help="do not open a browser window")
     return p
 
 
@@ -167,6 +176,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if cmd == "unknowns":
         print(open_questions().render())
+        return 0
+
+    if cmd == "serve":
+        from .server import serve
+
+        serve(host=args.host, port=args.port, open_browser=not args.no_browser)
         return 0
 
     if cmd == "geometry":

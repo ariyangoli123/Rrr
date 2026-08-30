@@ -74,12 +74,36 @@ Result(name='E_empirical', ..., tier=<Tier.EXTRAPOLATED>, flags=('N_EQUALS_1',
 
 ```bash
 pip install -e ".[dev]"
-pytest            # 299 passed, 4 skipped — 95% coverage
+pytest            # 341 passed, 4 skipped — 95% coverage
 ```
 
 Python 3.11+. Depends on numpy, scipy, pydantic and pyyaml — that is all. Charts are
 hand-written inline SVG, so reports open offline with no CDN and no plotting library. No
 CFD or FEM dependency.
+
+---
+
+## Interactive app
+
+```bash
+esrsim serve          # opens http://127.0.0.1:8000 in your browser
+```
+
+A local app with a tube selector, live sliders for gap, volume, column length,
+haematocrit, φ_pack, ESR and readout time, and twelve views: tube comparison, geometry,
+charts, kinetics, capillary and mixing, readout and error budget, ICSH feasibility,
+benchmark, design rules, parameter sweeps, the continuum research layer, and the open
+questions register.
+
+**The browser does no physics.** Every number is computed by the same Python functions
+the CLI and the test suite use, serialised with its tier, flags, notes and — for
+`UNKNOWN` — the reason and the experiment that closes it. Re-implementing the models in
+JavaScript would give two implementations of one calculation, and for a package whose
+whole premise is traceability, two answers for one number is the failure mode.
+
+Built on the standard library's `http.server`: no Flask, no FastAPI, no CDN. It binds to
+loopback only and works with the network cable unplugged. The JavaScript renderer
+throws rather than draw a row that arrives without a tier.
 
 ---
 
@@ -98,6 +122,7 @@ esrsim report --tube T070 --html report.html
 esrsim rules T070 --step 0.30 --upper-angle-offset -2
 esrsim export T070 --json                      # DRIVING dimensions for CAD
 esrsim unknowns                                # the honest core
+esrsim serve                                   # the interactive app
 ```
 
 ---
