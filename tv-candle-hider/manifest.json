@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "TV Candle Hider",
+  "version": "1.0.0",
+  "description": "Hide TradingView candles after a chosen date and reveal them one by one.",
+  "content_scripts": [
+    {
+      "matches": ["https://*.tradingview.com/chart/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}
