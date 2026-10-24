@@ -1,21 +1,17 @@
 // TV Candle Hider
 // The TradingView chart is drawn on a <canvas>, so candles are not HTML elements
-// and cannot be removed by editing the DOM. Instead this script uses the page's
-// own chart API (window.TradingViewApi) to draw a locked, opaque rectangle that
-// starts at the cutoff time and extends to the right. Because the rectangle is
-// anchored to time, it follows zoom/scroll and works on every timeframe.
+// and cannot be removed by editing the DOM. Instead this script lays an opaque
+// HTML curtain over the chart from the cutoff candle to the right edge, and uses
+// the page's chart API (window.TradingViewApi) to find where that candle is
+// drawn, so the curtain follows zoom/scroll and works on every timeframe.
 (() => {
   'use strict';
 
   const STORE_KEY = 'tvch-state';
-  const FAR_HIGH = 1e12;
-  const FAR_LOW = 1e-12;
   const WEEK_OFFSET = 4 * 86400; // 1970-01-05 was a Monday; TradingView weeks start Monday
 
   // State: cutoff = first hidden moment (unix seconds, UTC).
   let state = loadState();
-  let shapeId = null;
-  let shapeChart = null;
 
   function loadState() {
     try {
@@ -77,7 +73,7 @@
     return r;
   }
 
-  // ----- curtain shape -----
+  // ----- colors -----
 
   function curtainColor() {
     return state.color || detectBackground();
@@ -96,63 +92,122 @@
     return '#' + m.slice(0, 3).map((x) => (+x).toString(16).padStart(2, '0')).join('');
   }
 
-  async function removeCurtain() {
-    if (shapeId != null && shapeChart) {
-      try {
-        shapeChart.removeEntity(shapeId);
-      } catch (e) {}
-    }
-    shapeId = null;
-    shapeChart = null;
+  // ----- curtain overlay -----
+
+  let overlay = null;
+  let rafId = 0;
+  let lastError = '';
+
+  function chartContainer() {
+    return document.querySelector('.chart-container.active') || document.querySelector('.chart-container');
   }
 
-  // Draw (or redraw) the curtain for the stored cutoff on the active chart.
-  async function drawCurtain() {
-    const c = chart();
-    if (!c) throw new Error('API تریدینگ‌ویو پیدا نشد. صفحه را رفرش کنید.');
-    const r = currentResolution();
-    const firstHidden = barStart(state.cutoff, r);
-    // Drawing anchors snap to bar centers. In safe mode the curtain starts at the
-    // last visible bar so no part of a future candle leaks (half of the last
-    // visible candle is covered instead).
-    const left = state.safeEdge === false ? firstHidden : addBars(firstHidden, r, -1);
-    const points = [
-      { time: left, price: FAR_HIGH },
-      { time: addBars(left, r, 1), price: FAR_LOW },
-    ];
-    const color = curtainColor();
+  // Bounding box of the chart panes (main pane plus indicator panes). They are the
+  // widest canvases in the chart; the price axis is narrower and the time axis is short.
+  function paneRect(container) {
+    const rects = [...container.querySelectorAll('canvas')]
+      .map((c) => c.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0);
+    if (!rects.length) return null;
+    const maxW = Math.max(...rects.map((r) => r.width));
+    const panes = rects.filter((r) => Math.abs(r.width - maxW) < 2 && r.height > 40);
+    if (!panes.length) return null;
+    return {
+      left: panes[0].left,
+      width: maxW,
+      top: Math.min(...panes.map((r) => r.top)),
+      bottom: Math.max(...panes.map((r) => r.bottom)),
+    };
+  }
 
-    if (shapeId != null && shapeChart === c) {
-      try {
-        const shape = c.getShapeById(shapeId);
-        shape.setPoints(points);
-        shape.setProperties({ backgroundColor: color, color: color });
-        return;
-      } catch (e) {
-        // Shape is gone (symbol/layout changed); fall through and recreate it.
+  // X offset (from the pane's left edge) where the first hidden bar's slot begins.
+  function edgeX(c, firstHidden, width, r) {
+    let ts = null;
+    try {
+      ts = typeof c.getTimeScale === 'function' ? c.getTimeScale() : null;
+    } catch (e) {}
+    if (ts && typeof ts.coordinateToTime === 'function') {
+      // coordinateToTime returns the bar under x, so the smallest x whose bar is
+      // hidden is exactly the left edge of the first hidden candle's slot.
+      const hidden = (x) => {
+        const t = ts.coordinateToTime(x);
+        return t == null ? x > width / 2 : t >= firstHidden;
+      };
+      if (hidden(0)) return 0;
+      let lo = 0;
+      let hi = width;
+      while (hi - lo > 0.5) {
+        const mid = (lo + hi) / 2;
+        if (hidden(mid)) hi = mid;
+        else lo = mid;
       }
+      return lo;
     }
+    // Fallback: linear map of the visible time range (accurate for 24/7 markets).
+    const range = c.getVisibleRange();
+    const span = range.to - range.from;
+    if (!(span > 0)) return 0;
+    const barW = (width * (addBars(firstHidden, r, 1) - firstHidden)) / span;
+    const centerX = ((firstHidden - range.from) / span) * width;
+    return centerX - barW / 2 - (state.safeEdge === false ? 0 : barW / 2);
+  }
 
-    await removeCurtain();
-    shapeId = await c.createMultipointShape(points, {
-      shape: 'rectangle',
-      lock: true,
-      disableSelection: true,
-      disableSave: true,
-      disableUndo: true,
-      showInObjectsTree: false,
-      zOrder: 'top',
-      overrides: {
-        backgroundColor: color,
-        color: color,
-        fillBackground: true,
-        transparency: 0,
-        linewidth: 1,
-        extendRight: true,
-        extendLeft: false,
-      },
-    });
-    shapeChart = c;
+  function ensureOverlay(container) {
+    if (overlay && overlay.parentNode === container) return overlay;
+    if (overlay) overlay.remove();
+    if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+    overlay = document.createElement('div');
+    overlay.id = 'tvch-curtain';
+    // Opaque HTML on top of the canvas: TradingView cannot redraw or fade it, and it
+    // swallows the mouse so hovering hidden bars does not show their OHLC values.
+    overlay.style.cssText = 'position:absolute;z-index:50;pointer-events:auto;cursor:default;';
+    container.appendChild(overlay);
+    return overlay;
+  }
+
+  function reportError(msg) {
+    if (msg !== lastError) setStatus(msg);
+    lastError = msg;
+  }
+
+  // Runs every animation frame so the curtain follows scrolling, zooming and resizing.
+  function updateOverlay() {
+    rafId = 0;
+    if (!state.active) return;
+    try {
+      const c = chart();
+      const container = chartContainer();
+      const pane = container && paneRect(container);
+      if (!c || !pane) throw new Error('نمودار پیدا نشد.');
+      const r = currentResolution();
+      const x = Math.min(pane.width, Math.max(0, edgeX(c, barStart(state.cutoff, r), pane.width, r)));
+      const box = container.getBoundingClientRect();
+      const el = ensureOverlay(container);
+      el.style.left = pane.left - box.left + x + 'px';
+      el.style.top = pane.top - box.top + 'px';
+      el.style.width = pane.width - x + 'px';
+      el.style.height = pane.bottom - pane.top + 'px';
+      el.style.background = curtainColor();
+      el.style.display = '';
+      reportError('');
+    } catch (e) {
+      if (overlay) overlay.style.display = 'none';
+      reportError(e.message || String(e));
+    }
+    rafId = requestAnimationFrame(updateOverlay);
+  }
+
+  async function removeCurtain() {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    if (overlay) overlay.remove();
+    overlay = null;
+  }
+
+  async function drawCurtain() {
+    if (!chart()) throw new Error('API تریدینگ‌ویو پیدا نشد. صفحه را رفرش کنید.');
+    currentResolution();
+    if (!rafId) rafId = requestAnimationFrame(updateOverlay);
   }
 
   // ----- actions -----
@@ -327,21 +382,6 @@
     );
   }
 
-  // Redraw after timeframe or symbol changes so the curtain snaps to the new bars.
-  function subscribeChartEvents() {
-    const c = chart();
-    const redraw = () => setTimeout(() => state.active && run(drawCurtain), 300);
-    try {
-      c.onIntervalChanged().subscribe(null, redraw);
-    } catch (e) {}
-    try {
-      c.onSymbolChanged().subscribe(null, () => {
-        shapeId = null; // drawings belong to the old symbol
-        redraw();
-      });
-    } catch (e) {}
-  }
-
   function init() {
     buildPanel();
     bindKeys();
@@ -350,7 +390,6 @@
       const c = chart();
       if (c && typeof c.createMultipointShape === 'function') {
         clearInterval(wait);
-        subscribeChartEvents();
         if (state.active) run(drawCurtain);
       } else if (++tries > 120) {
         clearInterval(wait);
