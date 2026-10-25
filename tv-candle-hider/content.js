@@ -252,6 +252,422 @@
     });
   }
 
+  // ----- indicators -----
+  // Computed by this extension from the candle data, so they are not TradingView
+  // indicators. They only ever see candles older than the curtain edge, so a
+  // hidden candle can never leak into a line.
+  const PALETTE = ['#f7a600', '#2962ff', '#e91e63', '#00bcd4', '#9c27b0', '#8bc34a'];
+  const IND_NAMES = { sma: 'SMA', ema: 'EMA', bb: 'Bollinger', vwap: 'VWAP', rsi: 'RSI' };
+  const IND_DEFAULT = { sma: 20, ema: 50, bb: 20, vwap: 0, rsi: 14 };
+  const RSI_HEIGHT = 90;
+
+  let bars = [];
+  let barsKey = '';
+  let barsStamp = 0;
+  let fetchedFrom = 0;
+  let fetchedTo = 0;
+  let fetchedAt = 0;
+  let barsBusy = false;
+  let dataSource = '';
+  let indCanvas = null;
+  let rsiCanvas = null;
+  let indError = '';
+  let calcCache = { key: '', lines: [] };
+
+  function barSeconds(r) {
+    return r.kind === 'month' ? r.months * 2630000 : r.sec;
+  }
+
+  function barsFromExport(res) {
+    const schema = res.schema || [];
+    const find = (name) =>
+      schema.findIndex((x) =>
+        name === 'time'
+          ? x.type === 'time'
+          : String(x.plotTitle || x.title || x.name || '').toLowerCase() === name
+      );
+    const it = find('time');
+    const ic = find('close');
+    if (it < 0 || ic < 0) throw new Error('ساختار داده exportData ناشناخته است.');
+    const io = find('open');
+    const ih = find('high');
+    const il = find('low');
+    const iv = find('volume');
+    return res.data
+      .map((row) => ({
+        t: row[it],
+        o: row[io],
+        h: row[ih],
+        l: row[il],
+        c: row[ic],
+        v: iv >= 0 ? row[iv] || 0 : 0,
+      }))
+      .filter((b) => b.c != null);
+  }
+
+  // Fallback: read the main series straight from the chart widget internals.
+  function barsFromInternals() {
+    const a = api();
+    let w = null;
+    try {
+      w = a._activeChartWidgetWV && a._activeChartWidgetWV.value();
+    } catch (e) {}
+    const cw = (w && w._chartWidget) || (chart() && chart()._chartWidget);
+    const series = cw && cw.model().mainSeries();
+    const b = series && series.bars();
+    if (!b) throw new Error('داده کندل‌ها در دسترس نیست.');
+    const out = [];
+    for (let i = b.firstIndex(); i <= b.lastIndex(); i++) {
+      const v = b.valueAt(i);
+      const row = Array.isArray(v) ? v : v && v.value;
+      if (row && row[4] != null) out.push({ t: row[0], o: row[1], h: row[2], l: row[3], c: row[4], v: row[5] || 0 });
+    }
+    return out;
+  }
+
+  async function refreshBars(c, r) {
+    if (barsBusy) return;
+    const key = c.symbol() + '|' + c.resolution();
+    const range = c.getVisibleRange();
+    const bs = barSeconds(r);
+    const stale =
+      key !== barsKey ||
+      range.from < fetchedFrom + 200 * bs ||
+      range.to > fetchedTo - 5 * bs ||
+      Date.now() - fetchedAt > 5000;
+    if (!stale) return;
+    barsBusy = true;
+    try {
+      const from = Math.floor(range.from - 1500 * bs);
+      const to = Math.ceil(range.to + 100 * bs);
+      let got = null;
+      try {
+        if (typeof c.exportData !== 'function') throw new Error('no exportData');
+        got = barsFromExport(await c.exportData({ from, to, includeTime: true, includeSeries: true, includedStudies: [] }));
+        dataSource = 'exportData';
+      } catch (e) {
+        got = barsFromInternals();
+        dataSource = 'internals';
+      }
+      bars = got;
+      barsKey = key;
+      fetchedFrom = from;
+      fetchedTo = to;
+      fetchedAt = Date.now();
+      barsStamp++;
+    } catch (e) {
+      indError = e.message || String(e);
+    } finally {
+      barsBusy = false;
+    }
+  }
+
+  function calcSma(a, p) {
+    const out = [];
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+      sum += a[i];
+      if (i >= p) sum -= a[i - p];
+      out.push(i >= p - 1 ? sum / p : null);
+    }
+    return out;
+  }
+
+  function calcEma(a, p) {
+    const k = 2 / (p + 1);
+    const out = [];
+    let prev = null;
+    for (let i = 0; i < a.length; i++) {
+      if (i < p - 1) out.push(null);
+      else {
+        if (i === p - 1) prev = a.slice(0, p).reduce((x, y) => x + y, 0) / p;
+        else prev = a[i] * k + prev * (1 - k);
+        out.push(prev);
+      }
+    }
+    return out;
+  }
+
+  function calcBb(a, p, mult) {
+    const mid = calcSma(a, p);
+    const up = [];
+    const lo = [];
+    for (let i = 0; i < a.length; i++) {
+      if (mid[i] == null) {
+        up.push(null);
+        lo.push(null);
+        continue;
+      }
+      let v = 0;
+      for (let j = i - p + 1; j <= i; j++) v += (a[j] - mid[i]) * (a[j] - mid[i]);
+      const sd = Math.sqrt(v / p);
+      up.push(mid[i] + mult * sd);
+      lo.push(mid[i] - mult * sd);
+    }
+    return [mid, up, lo];
+  }
+
+  function calcRsi(a, p) {
+    const out = [null];
+    let gain = 0;
+    let loss = 0;
+    for (let i = 1; i < a.length; i++) {
+      const d = a[i] - a[i - 1];
+      const g = Math.max(d, 0);
+      const l = Math.max(-d, 0);
+      if (i <= p) {
+        gain += g / p;
+        loss += l / p;
+      } else {
+        gain = (gain * (p - 1) + g) / p;
+        loss = (loss * (p - 1) + l) / p;
+      }
+      out.push(i < p ? null : loss === 0 ? 100 : 100 - 100 / (1 + gain / loss));
+    }
+    return out;
+  }
+
+  // Resets every UTC day, like the usual session VWAP.
+  function calcVwap(list) {
+    let day = null;
+    let pv = 0;
+    let vol = 0;
+    return list.map((b) => {
+      const d = Math.floor(b.t / 86400);
+      if (d !== day) {
+        day = d;
+        pv = 0;
+        vol = 0;
+      }
+      const w = b.v || 1;
+      pv += ((b.h + b.l + b.c) / 3) * w;
+      vol += w;
+      return pv / vol;
+    });
+  }
+
+  // Lines for every configured indicator, using only candles before the curtain.
+  function computeLines(r) {
+    const limit = state.active ? barStart(state.cutoff, r) : Infinity;
+    const key = [barsStamp, limit, JSON.stringify(state.inds || [])].join('|');
+    if (calcCache.key === key) return calcCache.lines;
+    const use = bars.filter((b) => b.t < limit);
+    const close = use.map((b) => b.c);
+    const lines = [];
+    for (const ind of state.inds || []) {
+      const add = (vals, dashed) => lines.push({ ind, vals, dashed: !!dashed, pane: ind.type === 'rsi' ? 'rsi' : 'main' });
+      if (ind.type === 'sma') add(calcSma(close, ind.p));
+      else if (ind.type === 'ema') add(calcEma(close, ind.p));
+      else if (ind.type === 'vwap') add(calcVwap(use));
+      else if (ind.type === 'rsi') add(calcRsi(close, ind.p));
+      else if (ind.type === 'bb') {
+        const [mid, up, lo] = calcBb(close, ind.p, ind.m || 2);
+        add(mid, true);
+        add(up);
+        add(lo);
+      }
+    }
+    calcCache = { key, lines: lines.map((l) => ({ ...l, times: use.map((b) => b.t) })) };
+    return calcCache.lines;
+  }
+
+  // Time -> x: sample coordinateToTime across the pane and take each bar's middle.
+  function buildXMap(ts, width) {
+    const m = new Map();
+    for (let x = 0; x <= width; x += 2) {
+      const t = ts.coordinateToTime(x);
+      if (t == null) continue;
+      const e = m.get(t);
+      if (e) e[1] = x;
+      else m.set(t, [x, x]);
+    }
+    return m;
+  }
+
+  function makeYMap(c, rectHeight) {
+    const pane = c.getPanes()[0];
+    const ps = pane.getMainSourcePriceScale ? pane.getMainSourcePriceScale() : null;
+    if (!ps || typeof ps.getVisiblePriceRange !== 'function')
+      throw new Error('محور قیمت در دسترس نیست؛ اندیکاتورها قابل رسم نیستند.');
+    const rg = ps.getVisiblePriceRange();
+    const lo = rg.from != null ? rg.from : rg.min;
+    const hi = rg.to != null ? rg.to : rg.max;
+    const mode = ps.getMode ? ps.getMode() : 0;
+    const h = pane.getHeight ? pane.getHeight() : rectHeight;
+    if (mode === 1) {
+      const a = Math.log(hi);
+      const b = Math.log(lo);
+      return (v) => ((a - Math.log(v)) / (a - b)) * h;
+    }
+    if (mode !== 0) throw new Error('مقیاس محور قیمت باید Regular یا Log باشد.');
+    return (v) => ((hi - v) / (hi - lo)) * h;
+  }
+
+  function mainPaneRect(container) {
+    const paneBox = paneRect(container);
+    if (!paneBox) return null;
+    const rects = [...container.querySelectorAll('canvas')]
+      .map((el) => el.getBoundingClientRect())
+      .filter((q) => Math.abs(q.width - paneBox.width) < 2 && q.height > 40)
+      .sort((x, y) => x.top - y.top);
+    return rects[0] || null;
+  }
+
+  function sizedCanvas(existing, container, z, left, top, w, h) {
+    let cv = existing;
+    if (!cv || cv.parentNode !== container) {
+      if (cv) cv.remove();
+      cv = document.createElement('canvas');
+      cv.style.cssText = `position:absolute;z-index:${z};pointer-events:none;`;
+      container.appendChild(cv);
+    }
+    const dpr = window.devicePixelRatio || 1;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+    }
+    Object.assign(cv.style, { left: left + 'px', top: top + 'px', width: w + 'px', height: h + 'px' });
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    return cv;
+  }
+
+  function strokeLine(ctx, line, xmap, yOf) {
+    ctx.strokeStyle = line.ind.color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash(line.dashed ? [5, 3] : []);
+    ctx.beginPath();
+    let pen = false;
+    for (let i = 0; i < line.times.length; i++) {
+      const e = xmap.get(line.times[i]);
+      const v = line.vals[i];
+      if (!e || v == null) {
+        pen = false;
+        continue;
+      }
+      const x = (e[0] + e[1]) / 2;
+      const y = yOf(v);
+      if (pen) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+      pen = true;
+    }
+    ctx.stroke();
+  }
+
+  function removeIndCanvases() {
+    if (indCanvas) indCanvas.remove();
+    if (rsiCanvas) rsiCanvas.remove();
+    indCanvas = null;
+    rsiCanvas = null;
+  }
+
+  async function indicatorFrame() {
+    requestAnimationFrame(indicatorFrame);
+    const inds = state.inds || [];
+    if (!inds.length) {
+      removeIndCanvases();
+      setIndStatus('');
+      return;
+    }
+    try {
+      indError = '';
+      const c = chart();
+      const container = chartContainer();
+      const rect = container && mainPaneRect(container);
+      if (!c || !rect) throw new Error('نمودار پیدا نشد.');
+      const r = currentResolution();
+      refreshBars(c, r);
+      if (!bars.length) throw new Error(indError || 'در حال گرفتن داده کندل‌ها…');
+      const ts = typeof c.getTimeScale === 'function' ? c.getTimeScale() : null;
+      if (!ts || typeof ts.coordinateToTime !== 'function') throw new Error('محور زمان در دسترس نیست.');
+
+      const box = container.getBoundingClientRect();
+      const left = rect.left - box.left;
+      const top = rect.top - box.top;
+      const xmap = buildXMap(ts, rect.width);
+      const lines = computeLines(r);
+
+      const yMain = makeYMap(c, rect.height);
+      indCanvas = sizedCanvas(indCanvas, container, 40, left, top, rect.width, rect.height);
+      const ctx = indCanvas.getContext('2d');
+      ctx.save();
+      for (const l of lines) if (l.pane === 'main') strokeLine(ctx, l, xmap, yMain);
+      ctx.restore();
+
+      const rsiLines = lines.filter((l) => l.pane === 'rsi');
+      if (rsiLines.length) {
+        rsiCanvas = sizedCanvas(rsiCanvas, container, 41, left, top + rect.height - RSI_HEIGHT, rect.width, RSI_HEIGHT);
+        const rc = rsiCanvas.getContext('2d');
+        rc.fillStyle = curtainColor();
+        rc.globalAlpha = 0.9;
+        rc.fillRect(0, 0, rect.width, RSI_HEIGHT);
+        rc.globalAlpha = 1;
+        const yRsi = (v) => 6 + ((100 - v) / 100) * (RSI_HEIGHT - 12);
+        rc.strokeStyle = '#787b86';
+        rc.lineWidth = 1;
+        rc.setLineDash([2, 4]);
+        for (const lv of [30, 70]) {
+          rc.beginPath();
+          rc.moveTo(0, yRsi(lv));
+          rc.lineTo(rect.width, yRsi(lv));
+          rc.stroke();
+        }
+        for (const l of rsiLines) strokeLine(rc, l, xmap, yRsi);
+      } else if (rsiCanvas) {
+        rsiCanvas.remove();
+        rsiCanvas = null;
+      }
+      setIndStatus('داده: ' + dataSource);
+    } catch (e) {
+      if (indCanvas) indCanvas.getContext('2d').clearRect(0, 0, indCanvas.width, indCanvas.height);
+      setIndStatus('', e.message || String(e));
+    }
+  }
+
+  function setIndStatus(src, err) {
+    if (ui.isrc) ui.isrc.textContent = src || '';
+    if (ui.ierr) ui.ierr.textContent = err || '';
+  }
+
+  function addIndicator(type, period) {
+    const list = (state.inds = state.inds || []);
+    const p = Math.max(1, parseInt(period, 10) || IND_DEFAULT[type] || 14);
+    list.push({ id: Date.now(), type, p, m: 2, color: PALETTE[list.length % PALETTE.length] });
+    saveState();
+    renderInds();
+  }
+
+  function renderInds() {
+    if (!ui.ilist) return;
+    ui.ilist.textContent = '';
+    for (const ind of state.inds || []) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const color = document.createElement('input');
+      color.type = 'color';
+      color.value = ind.color;
+      color.oninput = () => {
+        ind.color = color.value;
+        saveState();
+      };
+      const name = document.createElement('span');
+      name.style.flex = '1';
+      name.textContent = IND_NAMES[ind.type] + (ind.type === 'vwap' ? '' : ' ' + ind.p);
+      const del = document.createElement('button');
+      del.className = 'sec';
+      del.style.flex = '0 0 auto';
+      del.textContent = '×';
+      del.onclick = () => {
+        state.inds = state.inds.filter((x) => x !== ind);
+        saveState();
+        renderInds();
+      };
+      row.append(color, name, del);
+      ui.ilist.appendChild(row);
+    }
+  }
+
   // ----- UI -----
 
   let ui = {};
@@ -295,6 +711,7 @@
         #tvch-panel button { background: #2962ff; color: #fff; border: 0; border-radius: 4px;
           padding: 6px; cursor: pointer; font: inherit; }
         #tvch-panel button.sec { background: #363a45; }
+        #tvch-panel select { background: #131722; color: inherit; border: 1px solid #434651; border-radius: 4px; padding: 4px; flex: 1; }
         #tvch-panel .row { display: flex; gap: 6px; align-items: center; }
         #tvch-panel .row > button { flex: 1; }
         #tvch-panel .big { font-size: 15px; padding: 10px; }
@@ -313,6 +730,16 @@
         <button class="sec tvch-prev">▶ یک کندل عقب</button>
         <label class="row"><input type="checkbox" class="tvch-safe"> لبه امن (هیچ بخشی از کندل آینده دیده نشود)</label>
         <label class="row">رنگ پرده: <input type="color" class="tvch-color"></label>
+        <hr style="width:100%;border:0;border-top:1px solid #434651;margin:2px 0">
+        <b>اندیکاتورها</b>
+        <div class="row">
+          <select class="tvch-itype"><option value="sma">SMA</option><option value="ema">EMA</option><option value="bb">Bollinger</option><option value="vwap">VWAP</option><option value="rsi">RSI</option></select>
+          <input type="number" class="tvch-iperiod" min="1" value="20" style="width:56px">
+          <button class="tvch-iadd" style="flex:0 0 auto">+</button>
+        </div>
+        <div class="tvch-ilist"></div>
+        <div class="muted tvch-isrc"></div>
+        <div class="err tvch-ierr"></div>
         <div class="muted tvch-info"></div>
         <div class="err tvch-status"></div>
         <div class="muted">میانبر: Shift+→ کندل بعدی، Shift+← عقب</div>
@@ -320,7 +747,15 @@
     document.body.appendChild(panel);
 
     const q = (s) => panel.querySelector(s);
-    ui = { panel, info: q('.tvch-info'), status: q('.tvch-status') };
+    ui = { panel, info: q('.tvch-info'), status: q('.tvch-status'), ilist: q('.tvch-ilist'), isrc: q('.tvch-isrc'), ierr: q('.tvch-ierr') };
+    const itype = q('.tvch-itype');
+    const iperiod = q('.tvch-iperiod');
+    itype.onchange = () => {
+      iperiod.disabled = itype.value === 'vwap';
+      iperiod.value = IND_DEFAULT[itype.value] || 14;
+    };
+    q('.tvch-iadd').onclick = () => addIndicator(itype.value, iperiod.value);
+    renderInds();
 
     const date = q('.tvch-date');
     if (state.cutoff) date.value = toLocalInput(state.cutoff);
@@ -385,10 +820,11 @@
   function init() {
     buildPanel();
     bindKeys();
+    requestAnimationFrame(indicatorFrame);
     let tries = 0;
     const wait = setInterval(() => {
       const c = chart();
-      if (c && typeof c.createMultipointShape === 'function') {
+      if (c) {
         clearInterval(wait);
         if (state.active) run(drawCurtain);
       } else if (++tries > 120) {
