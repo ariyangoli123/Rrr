@@ -105,7 +105,7 @@
   // Bounding box of the chart panes (main pane plus indicator panes). They are the
   // widest canvases in the chart; the price axis is narrower and the time axis is short.
   function paneRect(container) {
-    const rects = [...container.querySelectorAll('canvas')]
+    const rects = [...container.querySelectorAll('canvas:not([data-tvch])')]
       .map((c) => c.getBoundingClientRect())
       .filter((r) => r.width > 0 && r.height > 0);
     if (!rects.length) return null;
@@ -255,11 +255,256 @@
   // ----- indicators -----
   // Computed by this extension from the candle data, so they are not TradingView
   // indicators. They only ever see candles older than the curtain edge, so a
-  // hidden candle can never leak into a line.
-  const PALETTE = ['#f7a600', '#2962ff', '#e91e63', '#00bcd4', '#9c27b0', '#8bc34a'];
-  const IND_NAMES = { sma: 'SMA', ema: 'EMA', bb: 'Bollinger', vwap: 'VWAP', rsi: 'RSI' };
-  const IND_DEFAULT = { sma: 20, ema: 50, bb: 20, vwap: 0, rsi: 14 };
-  const RSI_HEIGHT = 90;
+  // hidden candle can never leak into a line. Colors, line styles, legends and
+  // price-axis tags copy TradingView's defaults for the built-in indicators.
+  const FONT = '-apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif';
+  const BLUE = '#2962FF';
+  const ORANGE = '#FF6D00';
+  const PURPLE = '#7E57C2';
+  const GREY = '#787B86';
+  const SUB_MIN = 70;
+  const SUB_MAX = 140;
+
+  const line = (title, vals, color, extra) => ({ title, vals, color, style: 'line', width: 1, ...extra });
+  const band = (v, dash) => ({ v, dash: dash || [4, 4], alpha: dash ? 0.5 : 1 });
+
+  // type -> definition. calc(d, params) gets {open, high, low, close, volume, hl2, hlc3, time}.
+  const IND = {
+    sma: { name: 'MA', group: 'main', params: [9], calc: (d, [n]) => ({ plots: [line('MA', sma(d.close, n), BLUE)] }) },
+    ema: { name: 'EMA', group: 'main', params: [9], calc: (d, [n]) => ({ plots: [line('EMA', ema(d.close, n), BLUE)] }) },
+    wma: { name: 'WMA', group: 'main', params: [9], calc: (d, [n]) => ({ plots: [line('WMA', wma(d.close, n), BLUE)] }) },
+    bb: {
+      name: 'BB',
+      group: 'main',
+      params: [20, 2],
+      calc: (d, [n, m]) => {
+        const basis = sma(d.close, n);
+        const sd = stdev(d.close, n);
+        const up = basis.map((b, i) => (b == null ? null : b + m * sd[i]));
+        const lo = basis.map((b, i) => (b == null ? null : b - m * sd[i]));
+        return {
+          plots: [line('Basis', basis, ORANGE), line('Upper', up, BLUE), line('Lower', lo, BLUE)],
+          fills: [{ a: up, b: lo, color: 'rgba(33,150,243,0.05)' }],
+        };
+      },
+    },
+    dc: {
+      name: 'DC',
+      group: 'main',
+      params: [20],
+      calc: (d, [n]) => {
+        const up = highest(d.high, n);
+        const lo = lowest(d.low, n);
+        const basis = up.map((u, i) => (u == null ? null : (u + lo[i]) / 2));
+        return {
+          plots: [line('Lower', lo, BLUE), line('Basis', basis, ORANGE), line('Upper', up, BLUE)],
+          fills: [{ a: up, b: lo, color: 'rgba(33,150,243,0.05)' }],
+        };
+      },
+    },
+    vwap: { name: 'VWAP', group: 'main', params: [], calc: (d) => ({ plots: [line('VWAP', vwap(d), BLUE)] }) },
+    ichimoku: {
+      name: 'Ichimoku',
+      group: 'main',
+      params: [9, 26, 52, 26],
+      calc: (d, [c, b, s, disp]) => {
+        const mid = (n) => highest(d.high, n).map((h, i) => (h == null ? null : (h + lowest(d.low, n)[i]) / 2));
+        const conv = mid(c);
+        const base = mid(b);
+        const leadA = conv.map((v, i) => (v == null || base[i] == null ? null : (v + base[i]) / 2));
+        const leadB = mid(s);
+        const off = disp - 1;
+        return {
+          plots: [
+            line('Conversion Line', conv, BLUE),
+            line('Base Line', base, '#B71C1C'),
+            line('Lagging Span', d.close, '#43A047', { offset: -off }),
+            line('Leading Span A', leadA, '#A5D6A7', { offset: off }),
+            line('Leading Span B', leadB, '#EF9A9A', { offset: off }),
+          ],
+          fills: [
+            {
+              a: leadA,
+              b: leadB,
+              offset: off,
+              colors: leadA.map((v, i) => (v != null && leadB[i] != null && v > leadB[i] ? 'rgba(67,160,71,0.1)' : 'rgba(244,67,54,0.1)')),
+            },
+          ],
+        };
+      },
+    },
+    supertrend: {
+      name: 'Supertrend',
+      group: 'main',
+      params: [10, 3],
+      calc: (d, [n, f]) => {
+        const { st, dir } = supertrend(d, n, f);
+        const bodyMid = d.open.map((o, i) => (o + d.close[i]) / 2);
+        const up = st.map((v, i) => (dir[i] < 0 ? v : null));
+        const dn = st.map((v, i) => (dir[i] > 0 ? v : null));
+        return {
+          plots: [line('Up Trend', up, '#4CAF50'), line('Down Trend', dn, '#FF5252')],
+          fills: [
+            { a: up, b: bodyMid, color: 'rgba(76,175,80,0.1)' },
+            { a: dn, b: bodyMid, color: 'rgba(255,82,82,0.1)' },
+          ],
+        };
+      },
+    },
+    sar: {
+      name: 'SAR',
+      group: 'main',
+      params: [0.02, 0.02, 0.2],
+      calc: (d, [s, inc, max]) => ({ plots: [line('ParabolicSAR', sar(d, s, inc, max), BLUE, { style: 'cross' })] }),
+    },
+    volume: {
+      name: 'Vol',
+      group: 'main',
+      params: [],
+      calc: (d) => ({
+        volume: true,
+        plots: [
+          {
+            title: 'Volume',
+            vals: d.volume,
+            style: 'columns',
+            colors: d.close.map((c, i) => (c >= d.open[i] ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)')),
+            compact: true,
+          },
+        ],
+      }),
+    },
+    rsi: {
+      name: 'RSI',
+      group: 'sub',
+      params: [14],
+      calc: (d, [n]) => ({
+        plots: [line('RSI', rsi(d.close, n), PURPLE)],
+        bands: [band(70), band(50, [1, 3]), band(30)],
+        bandFill: [70, 30, 'rgba(126,87,194,0.1)'],
+      }),
+    },
+    macd: {
+      name: 'MACD',
+      group: 'sub',
+      params: [12, 26, 9],
+      calc: (d, [f, s, sig]) => {
+        const fast = ema(d.close, f);
+        const slow = ema(d.close, s);
+        const m = fast.map((v, i) => (v == null || slow[i] == null ? null : v - slow[i]));
+        const signal = ema(m, sig);
+        const hist = m.map((v, i) => (v == null || signal[i] == null ? null : v - signal[i]));
+        const colors = hist.map((h, i) => {
+          const rising = i > 0 && hist[i - 1] != null && hist[i - 1] < h;
+          return h >= 0 ? (rising ? '#26A69A' : '#B2DFDB') : rising ? '#FFCDD2' : '#FF5252';
+        });
+        return {
+          plots: [
+            { title: 'Histogram', vals: hist, style: 'hist', colors },
+            line('MACD', m, BLUE),
+            line('Signal', signal, ORANGE),
+          ],
+          bands: [{ v: 0, dash: [], alpha: 0.5 }],
+        };
+      },
+    },
+    stoch: {
+      name: 'Stoch',
+      group: 'sub',
+      params: [14, 1, 3],
+      calc: (d, [n, sk, sd]) => {
+        const hh = highest(d.high, n);
+        const ll = lowest(d.low, n);
+        const raw = d.close.map((c, i) => (hh[i] == null ? null : hh[i] === ll[i] ? 0 : (100 * (c - ll[i])) / (hh[i] - ll[i])));
+        const k = sma(raw, sk);
+        return {
+          plots: [line('%K', k, BLUE), line('%D', sma(k, sd), ORANGE)],
+          bands: [band(80), band(50, [1, 3]), band(20)],
+          bandFill: [80, 20, 'rgba(33,150,243,0.1)'],
+        };
+      },
+    },
+    cci: {
+      name: 'CCI',
+      group: 'sub',
+      params: [20],
+      calc: (d, [n]) => {
+        const src = d.hlc3;
+        const ma = sma(src, n);
+        const out = src.map((v, i) => {
+          if (ma[i] == null) return null;
+          let dev = 0;
+          for (let j = i - n + 1; j <= i; j++) dev += Math.abs(src[j] - ma[i]);
+          dev /= n;
+          return dev === 0 ? 0 : (v - ma[i]) / (0.015 * dev);
+        });
+        return {
+          plots: [line('CCI', out, BLUE)],
+          bands: [band(100), band(0, [1, 3]), band(-100)],
+          bandFill: [100, -100, 'rgba(33,150,243,0.1)'],
+        };
+      },
+    },
+    willr: {
+      name: '%R',
+      group: 'sub',
+      params: [14],
+      calc: (d, [n]) => {
+        const hh = highest(d.high, n);
+        const ll = lowest(d.low, n);
+        const out = d.close.map((c, i) => (hh[i] == null ? null : hh[i] === ll[i] ? 0 : (100 * (c - hh[i])) / (hh[i] - ll[i])));
+        return {
+          plots: [line('%R', out, PURPLE)],
+          bands: [band(-20), band(-50, [1, 3]), band(-80)],
+          bandFill: [-20, -80, 'rgba(126,87,194,0.1)'],
+        };
+      },
+    },
+    atr: { name: 'ATR', group: 'sub', params: [14], calc: (d, [n]) => ({ plots: [line('ATR', rma(trueRange(d), n), '#B71C1C')] }) },
+    dmi: {
+      name: 'DMI',
+      group: 'sub',
+      params: [14, 14],
+      calc: (d, [n, sm]) => {
+        const { plus, minus, adx } = dmi(d, n, sm);
+        return { plots: [line('ADX', adx, '#F50057'), line('+DI', plus, BLUE), line('-DI', minus, ORANGE)] };
+      },
+    },
+    obv: {
+      name: 'OBV',
+      group: 'sub',
+      params: [],
+      calc: (d) => {
+        let acc = 0;
+        const out = d.close.map((c, i) => {
+          if (i > 0) acc += c > d.close[i - 1] ? d.volume[i] : c < d.close[i - 1] ? -d.volume[i] : 0;
+          return acc;
+        });
+        return { plots: [line('OBV', out, BLUE, { compact: true })] };
+      },
+    },
+  };
+
+  const IND_TITLES = {
+    sma: 'Moving Average',
+    ema: 'Moving Average Exponential',
+    wma: 'Moving Average Weighted',
+    bb: 'Bollinger Bands',
+    dc: 'Donchian Channels',
+    vwap: 'VWAP',
+    ichimoku: 'Ichimoku Cloud',
+    supertrend: 'Supertrend',
+    sar: 'Parabolic SAR',
+    volume: 'Volume',
+    rsi: 'Relative Strength Index',
+    macd: 'MACD',
+    stoch: 'Stochastic',
+    cci: 'Commodity Channel Index',
+    willr: 'Williams %R',
+    atr: 'Average True Range',
+    dmi: 'Directional Movement Index',
+    obv: 'On Balance Volume',
+  };
 
   let bars = [];
   let barsKey = '';
@@ -269,10 +514,7 @@
   let fetchedAt = 0;
   let barsBusy = false;
   let dataSource = '';
-  let indCanvas = null;
-  let rsiCanvas = null;
   let indError = '';
-  let calcCache = { key: '', lines: [] };
 
   function barSeconds(r) {
     return r.kind === 'month' ? r.months * 2630000 : r.sec;
@@ -349,7 +591,8 @@
         got = barsFromInternals();
         dataSource = 'internals';
       }
-      bars = got;
+      bars = got.sort((x, y) => x.t - y.t);
+      priceDecimals = decimalsOf(bars);
       barsKey = key;
       fetchedFrom = from;
       fetchedTo = to;
@@ -362,119 +605,10 @@
     }
   }
 
-  function calcSma(a, p) {
-    const out = [];
-    let sum = 0;
-    for (let i = 0; i < a.length; i++) {
-      sum += a[i];
-      if (i >= p) sum -= a[i - p];
-      out.push(i >= p - 1 ? sum / p : null);
-    }
-    return out;
-  }
-
-  function calcEma(a, p) {
-    const k = 2 / (p + 1);
-    const out = [];
-    let prev = null;
-    for (let i = 0; i < a.length; i++) {
-      if (i < p - 1) out.push(null);
-      else {
-        if (i === p - 1) prev = a.slice(0, p).reduce((x, y) => x + y, 0) / p;
-        else prev = a[i] * k + prev * (1 - k);
-        out.push(prev);
-      }
-    }
-    return out;
-  }
-
-  function calcBb(a, p, mult) {
-    const mid = calcSma(a, p);
-    const up = [];
-    const lo = [];
-    for (let i = 0; i < a.length; i++) {
-      if (mid[i] == null) {
-        up.push(null);
-        lo.push(null);
-        continue;
-      }
-      let v = 0;
-      for (let j = i - p + 1; j <= i; j++) v += (a[j] - mid[i]) * (a[j] - mid[i]);
-      const sd = Math.sqrt(v / p);
-      up.push(mid[i] + mult * sd);
-      lo.push(mid[i] - mult * sd);
-    }
-    return [mid, up, lo];
-  }
-
-  function calcRsi(a, p) {
-    const out = [null];
-    let gain = 0;
-    let loss = 0;
-    for (let i = 1; i < a.length; i++) {
-      const d = a[i] - a[i - 1];
-      const g = Math.max(d, 0);
-      const l = Math.max(-d, 0);
-      if (i <= p) {
-        gain += g / p;
-        loss += l / p;
-      } else {
-        gain = (gain * (p - 1) + g) / p;
-        loss = (loss * (p - 1) + l) / p;
-      }
-      out.push(i < p ? null : loss === 0 ? 100 : 100 - 100 / (1 + gain / loss));
-    }
-    return out;
-  }
-
-  // Resets every UTC day, like the usual session VWAP.
-  function calcVwap(list) {
-    let day = null;
-    let pv = 0;
-    let vol = 0;
-    return list.map((b) => {
-      const d = Math.floor(b.t / 86400);
-      if (d !== day) {
-        day = d;
-        pv = 0;
-        vol = 0;
-      }
-      const w = b.v || 1;
-      pv += ((b.h + b.l + b.c) / 3) * w;
-      vol += w;
-      return pv / vol;
-    });
-  }
-
-  // Lines for every configured indicator, using only candles before the curtain.
-  function computeLines(r) {
-    const limit = state.active ? barStart(state.cutoff, r) : Infinity;
-    const key = [barsStamp, limit, JSON.stringify(state.inds || [])].join('|');
-    if (calcCache.key === key) return calcCache.lines;
-    const use = bars.filter((b) => b.t < limit);
-    const close = use.map((b) => b.c);
-    const lines = [];
-    for (const ind of state.inds || []) {
-      const add = (vals, dashed) => lines.push({ ind, vals, dashed: !!dashed, pane: ind.type === 'rsi' ? 'rsi' : 'main' });
-      if (ind.type === 'sma') add(calcSma(close, ind.p));
-      else if (ind.type === 'ema') add(calcEma(close, ind.p));
-      else if (ind.type === 'vwap') add(calcVwap(use));
-      else if (ind.type === 'rsi') add(calcRsi(close, ind.p));
-      else if (ind.type === 'bb') {
-        const [mid, up, lo] = calcBb(close, ind.p, ind.m || 2);
-        add(mid, true);
-        add(up);
-        add(lo);
-      }
-    }
-    calcCache = { key, lines: lines.map((l) => ({ ...l, times: use.map((b) => b.t) })) };
-    return calcCache.lines;
-  }
-
   // Time -> x: sample coordinateToTime across the pane and take each bar's middle.
   function buildXMap(ts, width) {
     const m = new Map();
-    for (let x = 0; x <= width; x += 2) {
+    for (let x = 0; x <= width; x++) {
       const t = ts.coordinateToTime(x);
       if (t == null) continue;
       const e = m.get(t);
@@ -506,7 +640,7 @@
   function mainPaneRect(container) {
     const paneBox = paneRect(container);
     if (!paneBox) return null;
-    const rects = [...container.querySelectorAll('canvas')]
+    const rects = [...container.querySelectorAll('canvas:not([data-tvch])')]
       .map((el) => el.getBoundingClientRect())
       .filter((q) => Math.abs(q.width - paneBox.width) < 2 && q.height > 40)
       .sort((x, y) => x.top - y.top);
@@ -518,6 +652,7 @@
     if (!cv || cv.parentNode !== container) {
       if (cv) cv.remove();
       cv = document.createElement('canvas');
+      cv.dataset.tvch = '1'; // excluded when locating TradingView's own canvases
       cv.style.cssText = `position:absolute;z-index:${z};pointer-events:none;`;
       container.appendChild(cv);
     }
@@ -533,40 +668,566 @@
     return cv;
   }
 
-  function strokeLine(ctx, line, xmap, yOf) {
-    ctx.strokeStyle = line.ind.color;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash(line.dashed ? [5, 3] : []);
-    ctx.beginPath();
-    let pen = false;
-    for (let i = 0; i < line.times.length; i++) {
-      const e = xmap.get(line.times[i]);
-      const v = line.vals[i];
-      if (!e || v == null) {
-        pen = false;
+  // ----- indicator math (matches Pine's ta.* functions) -----
+
+  // Run fn on the series after its leading nulls, then pad the nulls back.
+  function afterLead(fn) {
+    return (a, ...args) => {
+      const f = a.findIndex((v) => v != null);
+      if (f < 0) return a.map(() => null);
+      return Array(f).fill(null).concat(fn(a.slice(f), ...args));
+    };
+  }
+
+  const sma = afterLead((a, p) => {
+    const out = [];
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+      sum += a[i];
+      if (i >= p) sum -= a[i - p];
+      out.push(i >= p - 1 ? sum / p : null);
+    }
+    return out;
+  });
+
+  // Exponential average seeded with the SMA of the first p values, like ta.ema/ta.rma.
+  function smoothed(alphaOf) {
+    return afterLead((a, p) => {
+      const k = alphaOf(p);
+      const out = [];
+      let prev = null;
+      for (let i = 0; i < a.length; i++) {
+        if (i < p - 1) out.push(null);
+        else {
+          prev = i === p - 1 ? a.slice(0, p).reduce((x, y) => x + y, 0) / p : a[i] * k + prev * (1 - k);
+          out.push(prev);
+        }
+      }
+      return out;
+    });
+  }
+
+  const ema = smoothed((p) => 2 / (p + 1));
+  const rma = smoothed((p) => 1 / p);
+
+  const wma = afterLead((a, p) => {
+    const den = (p * (p + 1)) / 2;
+    return a.map((_, i) => {
+      if (i < p - 1) return null;
+      let s = 0;
+      for (let j = 0; j < p; j++) s += a[i - j] * (p - j);
+      return s / den;
+    });
+  });
+
+  function stdev(a, p) {
+    const mean = sma(a, p);
+    return a.map((_, i) => {
+      if (mean[i] == null) return null;
+      let v = 0;
+      for (let j = i - p + 1; j <= i; j++) v += (a[j] - mean[i]) ** 2;
+      return Math.sqrt(v / p);
+    });
+  }
+
+  function windowed(a, p, pick) {
+    return a.map((_, i) => (i < p - 1 ? null : pick(a.slice(i - p + 1, i + 1))));
+  }
+
+  const highest = (a, p) => windowed(a, p, (w) => Math.max(...w));
+  const lowest = (a, p) => windowed(a, p, (w) => Math.min(...w));
+
+  function trueRange(d) {
+    return d.high.map((h, i) =>
+      i === 0 ? h - d.low[i] : Math.max(h - d.low[i], Math.abs(h - d.close[i - 1]), Math.abs(d.low[i] - d.close[i - 1]))
+    );
+  }
+
+  function rsi(close, n) {
+    const up = close.map((c, i) => (i === 0 ? null : Math.max(c - close[i - 1], 0)));
+    const dn = close.map((c, i) => (i === 0 ? null : Math.max(close[i - 1] - c, 0)));
+    const u = rma(up, n);
+    const dd = rma(dn, n);
+    return u.map((v, i) => (v == null ? null : dd[i] === 0 ? 100 : v === 0 ? 0 : 100 - 100 / (1 + v / dd[i])));
+  }
+
+  // Resets every UTC day, like the session VWAP on a 24/7 market.
+  function vwap(d) {
+    let day = null;
+    let pv = 0;
+    let vol = 0;
+    return d.close.map((_, i) => {
+      const dayNo = Math.floor(d.time[i] / 86400);
+      if (dayNo !== day) {
+        day = dayNo;
+        pv = 0;
+        vol = 0;
+      }
+      const w = d.volume[i] || 1;
+      pv += d.hlc3[i] * w;
+      vol += w;
+      return pv / vol;
+    });
+  }
+
+  // Port of ta.supertrend: dir < 0 is an up trend.
+  function supertrend(d, n, f) {
+    const atr = rma(trueRange(d), n);
+    const st = [];
+    const dir = [];
+    let prevUp = null;
+    let prevLo = null;
+    let prevSt = null;
+    for (let i = 0; i < d.close.length; i++) {
+      if (atr[i] == null) {
+        st.push(null);
+        dir.push(0);
         continue;
       }
-      const x = (e[0] + e[1]) / 2;
-      const y = yOf(v);
-      if (pen) ctx.lineTo(x, y);
-      else ctx.moveTo(x, y);
-      pen = true;
+      let up = d.hl2[i] + f * atr[i];
+      let lo = d.hl2[i] - f * atr[i];
+      if (prevLo != null && !(lo > prevLo || d.close[i - 1] < prevLo)) lo = prevLo;
+      if (prevUp != null && !(up < prevUp || d.close[i - 1] > prevUp)) up = prevUp;
+      let dr;
+      if (atr[i - 1] == null) dr = 1;
+      else if (prevSt === prevUp) dr = d.close[i] > up ? -1 : 1;
+      else dr = d.close[i] < lo ? 1 : -1;
+      const v = dr < 0 ? lo : up;
+      st.push(v);
+      dir.push(dr);
+      prevUp = up;
+      prevLo = lo;
+      prevSt = v;
     }
-    ctx.stroke();
+    return { st, dir };
   }
 
-  function removeIndCanvases() {
-    if (indCanvas) indCanvas.remove();
-    if (rsiCanvas) rsiCanvas.remove();
-    indCanvas = null;
-    rsiCanvas = null;
+  // Port of the reference ta.sar implementation from the Pine manual.
+  function sar(d, start, inc, max) {
+    const out = [null];
+    let result = null;
+    let maxMin = null;
+    let accel = null;
+    let below = null;
+    for (let i = 1; i < d.close.length; i++) {
+      const h = d.high;
+      const l = d.low;
+      let first = false;
+      if (i === 1) {
+        if (d.close[1] > d.close[0]) {
+          below = true;
+          maxMin = h[1];
+          result = l[0];
+        } else {
+          below = false;
+          maxMin = l[1];
+          result = h[0];
+        }
+        first = true;
+        accel = start;
+      }
+      result += accel * (maxMin - result);
+      if (below) {
+        if (result > l[i]) {
+          first = true;
+          below = false;
+          result = Math.max(h[i], maxMin);
+          maxMin = l[i];
+          accel = start;
+        }
+      } else if (result < h[i]) {
+        first = true;
+        below = true;
+        result = Math.min(l[i], maxMin);
+        maxMin = h[i];
+        accel = start;
+      }
+      if (!first) {
+        if (below && h[i] > maxMin) {
+          maxMin = h[i];
+          accel = Math.min(accel + inc, max);
+        } else if (!below && l[i] < maxMin) {
+          maxMin = l[i];
+          accel = Math.min(accel + inc, max);
+        }
+      }
+      if (below) {
+        result = Math.min(result, l[i - 1]);
+        if (i > 1) result = Math.min(result, l[i - 2]);
+      } else {
+        result = Math.max(result, h[i - 1]);
+        if (i > 1) result = Math.max(result, h[i - 2]);
+      }
+      out.push(result);
+    }
+    return out;
   }
 
-  async function indicatorFrame() {
+  function dmi(d, n, sm) {
+    const plusDm = d.high.map((h, i) => {
+      if (i === 0) return null;
+      const up = h - d.high[i - 1];
+      const down = d.low[i - 1] - d.low[i];
+      return up > down && up > 0 ? up : 0;
+    });
+    const minusDm = d.low.map((l, i) => {
+      if (i === 0) return null;
+      const up = d.high[i] - d.high[i - 1];
+      const down = d.low[i - 1] - l;
+      return down > up && down > 0 ? down : 0;
+    });
+    const tr = rma(trueRange(d).map((v, i) => (i === 0 ? null : v)), n);
+    const plus = rma(plusDm, n).map((v, i) => (v == null || !tr[i] ? null : (100 * v) / tr[i]));
+    const minus = rma(minusDm, n).map((v, i) => (v == null || !tr[i] ? null : (100 * v) / tr[i]));
+    const dx = plus.map((p, i) => (p == null || minus[i] == null ? null : Math.abs(p - minus[i]) / (p + minus[i] || 1)));
+    const adx = rma(dx, sm).map((v) => (v == null ? null : 100 * v));
+    return { plus, minus, adx };
+  }
+
+  // ----- indicator rendering -----
+
+  let calcCache = { key: '', list: [], useLen: 0, timeIndex: new Map() };
+  let priceDecimals = 2;
+  let mainCanvas = null;
+  let axisCanvas = null;
+  let subCanvases = [];
+  let legendEls = [];
+  let mouseX = null;
+  let trackedContainer = null;
+
+  // Smallest number of decimals that represents every recent close.
+  function decimalsOf(list) {
+    const closes = list.slice(-100).map((b) => b.c);
+    for (let dec = 0; dec <= 8; dec++) {
+      const f = 10 ** dec;
+      if (closes.every((c) => Math.abs(c * f - Math.round(c * f)) < 1e-4)) return dec;
+    }
+    return 8;
+  }
+
+  function seriesOf(use) {
+    const d = { time: [], open: [], high: [], low: [], close: [], volume: [], hl2: [], hlc3: [] };
+    for (const b of use) {
+      const hi = b.h ?? b.c;
+      const lo = b.l ?? b.c;
+      d.time.push(b.t);
+      d.open.push(b.o ?? b.c);
+      d.high.push(hi);
+      d.low.push(lo);
+      d.close.push(b.c);
+      d.volume.push(b.v || 0);
+      d.hl2.push((hi + lo) / 2);
+      d.hlc3.push((hi + lo + b.c) / 3);
+    }
+    return d;
+  }
+
+  // Older versions stored {p, m} and their own palette; move them to TradingView defaults.
+  function normInds() {
+    state.inds = (state.inds || []).filter((x) => IND[x.type]);
+    for (const ind of state.inds) {
+      if (!Array.isArray(ind.params)) {
+        const def = IND[ind.type].params;
+        ind.params = ind.type === 'bb' ? [ind.p || 20, ind.m || 2] : def.length ? [ind.p || def[0], ...def.slice(1)] : [];
+        delete ind.color;
+      }
+      if (ind.visible == null) ind.visible = true;
+    }
+  }
+
+  function defaultColor(type) {
+    try {
+      const two = seriesOf([
+        { t: 0, o: 1, h: 2, l: 0.5, c: 1.5, v: 1 },
+        { t: 60, o: 1.5, h: 2.5, l: 1, c: 2, v: 1 },
+      ]);
+      const p = IND[type].calc(two, IND[type].params).plots.find((x) => !x.colors);
+      return p ? p.color : BLUE;
+    } catch (e) {
+      return BLUE;
+    }
+  }
+
+  function computeAll(r) {
+    const limit = state.active ? barStart(state.cutoff, r) : Infinity;
+    const key = [barsStamp, limit, JSON.stringify(state.inds)].join('|');
+    if (calcCache.key === key) return calcCache;
+    const use = bars.filter((b) => b.t < limit);
+    const d = seriesOf(use);
+    const list = [];
+    for (const ind of state.inds) {
+      if (!ind.visible) continue;
+      const def = IND[ind.type];
+      const out = def.calc(d, ind.params);
+      if (ind.color) {
+        const p = out.plots.find((x) => !x.colors);
+        if (p) p.color = ind.color;
+      }
+      list.push({ ind, def, out });
+    }
+    calcCache = { key, list, useLen: use.length, timeIndex: new Map(use.map((b, i) => [b.t, i])) };
+    return calcCache;
+  }
+
+  function barSpacing(xmap) {
+    const w = [...xmap.values()].map((e) => e[1] - e[0] + 1).sort((a, b) => a - b);
+    return w.length ? w[Math.floor(w.length / 2)] : 6;
+  }
+
+  // Bar index -> x center. Bars cut by the pane edge are centered by the bar spacing,
+  // and indexes past the last bar (Ichimoku's leading spans) are extrapolated.
+  function makeXAt(xmap, spacing, width) {
+    const center = (e) => (e[0] === 0 ? e[1] + 1 - spacing / 2 : e[1] >= width ? e[0] + spacing / 2 : (e[0] + e[1]) / 2);
+    const n = bars.length;
+    const lastE = n ? xmap.get(bars[n - 1].t) : null;
+    const lastX = lastE ? center(lastE) : null;
+    return (i) => {
+      if (i < 0) return undefined;
+      if (i < n) {
+        const e = xmap.get(bars[i].t);
+        return e ? center(e) : undefined;
+      }
+      return lastX == null ? undefined : lastX + (i - n + 1) * spacing;
+    };
+  }
+
+  function axisRect(container, main) {
+    let best = null;
+    for (const el of container.querySelectorAll('canvas:not([data-tvch])')) {
+      const r = el.getBoundingClientRect();
+      if (Math.abs(r.left - main.right) < 3 && Math.abs(r.top - main.top) < 3 && r.width > 0 && r.width < 200) {
+        if (!best || r.width > best.width) best = r;
+      }
+    }
+    return best;
+  }
+
+  // Bottom of TradingView's own legend, so ours goes right below it.
+  function tvLegendBottom(container, main) {
+    let best = main.top + 6;
+    for (const el of container.querySelectorAll('[data-name="legend"], [class*="legend"]')) {
+      const r = el.getBoundingClientRect();
+      if (!r.height || r.height > main.height * 0.5) continue;
+      if (r.top < main.top - 2 || r.top > main.top + main.height * 0.4 || r.left > main.left + main.width / 2) continue;
+      best = Math.max(best, r.bottom);
+    }
+    return best;
+  }
+
+  function hexToRgb(color) {
+    const m = color.match(/^#([0-9a-f]{6})$/i);
+    if (m) return [0, 2, 4].map((k) => parseInt(m[1].substr(k, 2), 16));
+    const n = color.match(/\d+(\.\d+)?/g);
+    return n ? n.slice(0, 3).map(Number) : [0, 0, 0];
+  }
+
+  function isLight(color) {
+    const [r, g, b] = hexToRgb(color);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6;
+  }
+
+  function themeColors() {
+    const bg = curtainColor();
+    return isLight(bg)
+      ? { bg, text: '#131722', sep: '#E0E3EB', band: GREY }
+      : { bg, text: '#B2B5BE', sep: '#2A2E39', band: GREY };
+  }
+
+  function solid(color) {
+    return color.replace(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*[\d.]+\)/, 'rgb($1,$2,$3)');
+  }
+
+  function compact(v) {
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(3) + 'B';
+    if (a >= 1e6) return (v / 1e6).toFixed(3) + 'M';
+    if (a >= 1e3) return (v / 1e3).toFixed(3) + 'K';
+    return v.toFixed(2);
+  }
+
+  function fmtVal(v, plot, group) {
+    if (v == null || !isFinite(v)) return '∅';
+    if (plot.compact) return compact(v);
+    return v.toFixed(group === 'main' ? priceDecimals : 2);
+  }
+
+  function lastIndex(vals, last) {
+    for (let i = Math.min(last, vals.length - 1); i >= 0; i--) if (vals[i] != null) return i;
+    return -1;
+  }
+
+  function drawFill(ctx, f, xAt, yOf, last) {
+    const off = f.offset || 0;
+    for (let i = 1; i <= last; i++) {
+      const a0 = f.a[i - 1];
+      const a1 = f.a[i];
+      const b0 = f.b[i - 1];
+      const b1 = f.b[i];
+      if (a0 == null || a1 == null || b0 == null || b1 == null) continue;
+      const x0 = xAt(i - 1 + off);
+      const x1 = xAt(i + off);
+      if (x0 === undefined || x1 === undefined) continue;
+      ctx.fillStyle = f.colors ? f.colors[i] : f.color;
+      ctx.beginPath();
+      ctx.moveTo(x0, yOf(a0));
+      ctx.lineTo(x1, yOf(a1));
+      ctx.lineTo(x1, yOf(b1));
+      ctx.lineTo(x0, yOf(b0));
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawPlot(ctx, p, xAt, yOf, last, spacing, baseY) {
+    const off = p.offset || 0;
+    if (p.style === 'line') {
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = p.width || 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      let pen = false;
+      for (let i = 0; i <= last; i++) {
+        const v = p.vals[i];
+        const x = xAt(i + off);
+        if (v == null || x === undefined) {
+          pen = false;
+          continue;
+        }
+        const y = yOf(v);
+        if (pen) ctx.lineTo(x, y);
+        else ctx.moveTo(x, y);
+        pen = true;
+      }
+      ctx.stroke();
+    } else if (p.style === 'cross') {
+      const s = Math.max(2, Math.min(4, spacing * 0.35));
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      for (let i = 0; i <= last; i++) {
+        const v = p.vals[i];
+        const x = xAt(i + off);
+        if (v == null || x === undefined) continue;
+        const y = yOf(v);
+        ctx.moveTo(x - s, y);
+        ctx.lineTo(x + s, y);
+        ctx.moveTo(x, y - s);
+        ctx.lineTo(x, y + s);
+      }
+      ctx.stroke();
+    } else {
+      // 'hist' grows from zero, 'columns' from the bottom of the area.
+      const w = Math.max(1, Math.round(spacing * 0.6));
+      for (let i = 0; i <= last; i++) {
+        const v = p.vals[i];
+        const x = xAt(i + off);
+        if (v == null || x === undefined) continue;
+        const y = yOf(v);
+        ctx.fillStyle = p.colors ? p.colors[i] : p.color;
+        ctx.fillRect(Math.round(x - w / 2), Math.min(y, baseY), w, Math.max(1, Math.abs(baseY - y)));
+      }
+    }
+  }
+
+  function drawTag(ctx, y, text, color, w) {
+    const h = 18;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, Math.round(y - h / 2), w, h);
+    ctx.fillStyle = isLight(color) ? '#131722' : '#FFFFFF';
+    ctx.font = `12px ${FONT}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 6, y);
+  }
+
+  // Min/max of the plots over the bars currently on screen (never hidden ones).
+  function visibleRange(item, xAt, last, width) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const p of item.out.plots) {
+      const off = p.offset || 0;
+      for (let i = 0; i <= last; i++) {
+        const v = p.vals[i];
+        const x = xAt(i + off);
+        if (v == null || x === undefined || x < 0 || x > width) continue;
+        lo = Math.min(lo, v);
+        hi = Math.max(hi, v);
+      }
+      if (p.style === 'hist') {
+        lo = Math.min(lo, 0);
+        hi = Math.max(hi, 0);
+      }
+    }
+    for (const b of item.out.bands || []) {
+      lo = Math.min(lo, b.v);
+      hi = Math.max(hi, b.v);
+    }
+    if (!isFinite(lo)) return [0, 1];
+    if (hi === lo) return [lo - 1, hi + 1];
+    return [lo, hi];
+  }
+
+  function legendEl(container, k) {
+    let el = legendEls[k];
+    if (!el || el.parentNode !== container) {
+      if (el) el.remove();
+      el = document.createElement('div');
+      el.className = 'tvch-lg';
+      el.style.cssText = `position:absolute;z-index:46;pointer-events:none;font:13px/20px ${FONT};white-space:nowrap;`;
+      container.appendChild(el);
+      legendEls[k] = el;
+    }
+    return el;
+  }
+
+  function legendLine(item, idx, theme) {
+    const params = item.ind.params.length ? ' ' + item.ind.params.join(' ') : '';
+    const vals = item.out.plots
+      .map((p) => {
+        const j = idx - (p.offset || 0);
+        const col = solid(p.colors ? p.colors[j] || theme.text : p.color);
+        return `<span style="color:${col}">${fmtVal(p.vals[j], p, item.def.group)}</span>`;
+      })
+      .join(' ');
+    return `<div><span style="color:${theme.text}">${item.def.name}${params}</span>&nbsp; ${vals}</div>`;
+  }
+
+  function setLegend(el, left, top, html) {
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    if (el._html !== html) {
+      el.innerHTML = html;
+      el._html = html;
+    }
+  }
+
+  function clearIndicatorDom() {
+    for (const el of [mainCanvas, axisCanvas, ...subCanvases, ...legendEls]) if (el) el.remove();
+    mainCanvas = null;
+    axisCanvas = null;
+    subCanvases = [];
+    legendEls = [];
+  }
+
+  function trackMouse(container) {
+    if (trackedContainer === container) return;
+    trackedContainer = container;
+    container.addEventListener('mousemove', (e) => (mouseX = e.clientX), true);
+    container.addEventListener('mouseleave', () => (mouseX = null), true);
+  }
+
+  // The legend shows the bar under the mouse, like TradingView, but never a hidden bar.
+  function hoverIndex(ts, main, cache) {
+    const last = cache.useLen - 1;
+    if (mouseX == null) return last;
+    const idx = cache.timeIndex.get(ts.coordinateToTime(mouseX - main.left));
+    return idx == null ? last : Math.min(idx, last);
+  }
+
+  function indicatorFrame() {
     requestAnimationFrame(indicatorFrame);
-    const inds = state.inds || [];
-    if (!inds.length) {
-      removeIndCanvases();
+    if (!(state.inds || []).some((x) => x.visible)) {
+      clearIndicatorDom();
       setIndStatus('');
       return;
     }
@@ -574,53 +1235,140 @@
       indError = '';
       const c = chart();
       const container = chartContainer();
-      const rect = container && mainPaneRect(container);
-      if (!c || !rect) throw new Error('نمودار پیدا نشد.');
+      const main = container && mainPaneRect(container);
+      if (!c || !main) throw new Error('نمودار پیدا نشد.');
       const r = currentResolution();
       refreshBars(c, r);
       if (!bars.length) throw new Error(indError || 'در حال گرفتن داده کندل‌ها…');
       const ts = typeof c.getTimeScale === 'function' ? c.getTimeScale() : null;
       if (!ts || typeof ts.coordinateToTime !== 'function') throw new Error('محور زمان در دسترس نیست.');
+      trackMouse(container);
 
+      const cache = computeAll(r);
+      const last = cache.useLen - 1;
+      const theme = themeColors();
       const box = container.getBoundingClientRect();
-      const left = rect.left - box.left;
-      const top = rect.top - box.top;
-      const xmap = buildXMap(ts, rect.width);
-      const lines = computeLines(r);
+      const left = main.left - box.left;
+      const top = main.top - box.top;
+      const W = main.width;
+      const axis = axisRect(container, main);
+      const axisW = axis ? axis.width : 0;
+      const xmap = buildXMap(ts, W);
+      const spacing = barSpacing(xmap);
+      const xAt = makeXAt(xmap, spacing, W);
+      const hover = hoverIndex(ts, main, cache);
 
-      const yMain = makeYMap(c, rect.height);
-      indCanvas = sizedCanvas(indCanvas, container, 40, left, top, rect.width, rect.height);
-      const ctx = indCanvas.getContext('2d');
+      const mains = cache.list.filter((x) => x.def.group === 'main');
+      const subs = cache.list.filter((x) => x.def.group === 'sub');
+      let subH = Math.min(SUB_MAX, Math.max(SUB_MIN, main.height * 0.2));
+      if (subs.length * subH > main.height * 0.6) subH = (main.height * 0.6) / subs.length;
+      const mainH = main.height - subs.length * subH;
+
+      // Main pane: overlays on TradingView's own price scale.
+      const yMain = makeYMap(c, main.height);
+      mainCanvas = sizedCanvas(mainCanvas, container, 40, left, top, W, main.height);
+      const ctx = mainCanvas.getContext('2d');
       ctx.save();
-      for (const l of lines) if (l.pane === 'main') strokeLine(ctx, l, xmap, yMain);
+      ctx.beginPath();
+      ctx.rect(0, 0, W, mainH);
+      ctx.clip();
+      for (const item of mains) {
+        if (item.out.volume) {
+          let vmax = 0;
+          const vals = item.out.plots[0].vals;
+          for (let i = 0; i <= last; i++) {
+            const x = xAt(i);
+            if (x !== undefined && x >= 0 && x <= W) vmax = Math.max(vmax, vals[i]);
+          }
+          const volH = mainH * 0.2;
+          drawPlot(ctx, item.out.plots[0], xAt, (v) => mainH - (vmax ? (v / vmax) * volH : 0), last, spacing, mainH);
+          continue;
+        }
+        for (const f of item.out.fills || []) drawFill(ctx, f, xAt, yMain, last);
+        for (const p of item.out.plots) drawPlot(ctx, p, xAt, yMain, last, spacing, yMain(0));
+      }
       ctx.restore();
 
-      const rsiLines = lines.filter((l) => l.pane === 'rsi');
-      if (rsiLines.length) {
-        rsiCanvas = sizedCanvas(rsiCanvas, container, 41, left, top + rect.height - RSI_HEIGHT, rect.width, RSI_HEIGHT);
-        const rc = rsiCanvas.getContext('2d');
-        rc.fillStyle = curtainColor();
-        rc.globalAlpha = 0.9;
-        rc.fillRect(0, 0, rect.width, RSI_HEIGHT);
-        rc.globalAlpha = 1;
-        const yRsi = (v) => 6 + ((100 - v) / 100) * (RSI_HEIGHT - 12);
-        rc.strokeStyle = '#787b86';
-        rc.lineWidth = 1;
-        rc.setLineDash([2, 4]);
-        for (const lv of [30, 70]) {
-          rc.beginPath();
-          rc.moveTo(0, yRsi(lv));
-          rc.lineTo(rect.width, yRsi(lv));
-          rc.stroke();
+      if (axis) {
+        axisCanvas = sizedCanvas(axisCanvas, container, 42, axis.left - box.left, top, axisW, mainH);
+        const actx = axisCanvas.getContext('2d');
+        for (const item of mains) {
+          if (item.out.volume) continue;
+          for (const p of item.out.plots) {
+            const i = lastIndex(p.vals, last);
+            if (i >= 0) drawTag(actx, yMain(p.vals[i]), fmtVal(p.vals[i], p, 'main'), p.color, axisW);
+          }
         }
-        for (const l of rsiLines) strokeLine(rc, l, xmap, yRsi);
-      } else if (rsiCanvas) {
-        rsiCanvas.remove();
-        rsiCanvas = null;
+      } else if (axisCanvas) {
+        axisCanvas.remove();
+        axisCanvas = null;
       }
+
+      let k = 0;
+      if (mains.length) {
+        const html = mains.map((item) => legendLine(item, hover, theme)).join('');
+        setLegend(legendEl(container, k++), left + 8, tvLegendBottom(container, main) - box.top + 2, html);
+      }
+
+      // Oscillators: one pane each, stacked at the bottom of the chart.
+      subs.forEach((item, n) => {
+        const paneTop = top + mainH + n * subH;
+        const cv = (subCanvases[n] = sizedCanvas(subCanvases[n], container, 44, left, paneTop, W + axisW, subH));
+        const sc = cv.getContext('2d');
+        sc.fillStyle = theme.bg;
+        sc.fillRect(0, 0, W + axisW, subH);
+        sc.fillStyle = theme.sep;
+        sc.fillRect(0, 0, W + axisW, 1);
+        const [lo, hi] = visibleRange(item, xAt, last, W);
+        const pad = (hi - lo) * 0.08;
+        const yS = (v) => 4 + ((hi + pad - v) / (hi - lo + 2 * pad)) * (subH - 8);
+
+        sc.save();
+        sc.beginPath();
+        sc.rect(0, 1, W, subH - 1);
+        sc.clip();
+        if (item.out.bandFill) {
+          const [a, b, col] = item.out.bandFill;
+          sc.fillStyle = col;
+          sc.fillRect(0, yS(a), W, yS(b) - yS(a));
+        }
+        for (const b of item.out.bands || []) {
+          sc.strokeStyle = theme.band;
+          sc.globalAlpha = b.alpha;
+          sc.setLineDash(b.dash);
+          sc.lineWidth = 1;
+          sc.beginPath();
+          sc.moveTo(0, Math.round(yS(b.v)) + 0.5);
+          sc.lineTo(W, Math.round(yS(b.v)) + 0.5);
+          sc.stroke();
+          sc.globalAlpha = 1;
+        }
+        for (const p of item.out.plots) drawPlot(sc, p, xAt, yS, last, spacing, yS(0));
+        sc.restore();
+
+        if (axisW) {
+          sc.save();
+          sc.translate(W, 0);
+          sc.fillStyle = theme.text;
+          sc.font = `12px ${FONT}`;
+          sc.textBaseline = 'middle';
+          for (const b of item.out.bands || []) if (b.alpha === 1) sc.fillText(String(b.v), 6, yS(b.v));
+          for (const p of item.out.plots) {
+            const i = lastIndex(p.vals, last);
+            if (i < 0) continue;
+            const col = p.colors ? solid(p.colors[i]) : p.color;
+            drawTag(sc, Math.min(subH - 9, Math.max(9, yS(p.vals[i]))), fmtVal(p.vals[i], p, 'sub'), col, axisW);
+          }
+          sc.restore();
+        }
+        setLegend(legendEl(container, k++), left + 8, paneTop + 4, legendLine(item, hover, theme));
+      });
+      for (const extra of subCanvases.splice(subs.length)) if (extra) extra.remove();
+      for (const extra of legendEls.splice(k)) if (extra) extra.remove();
+
       setIndStatus('داده: ' + dataSource);
     } catch (e) {
-      if (indCanvas) indCanvas.getContext('2d').clearRect(0, 0, indCanvas.width, indCanvas.height);
+      clearIndicatorDom();
       setIndStatus('', e.message || String(e));
     }
   }
@@ -630,10 +1378,28 @@
     if (ui.ierr) ui.ierr.textContent = err || '';
   }
 
-  function addIndicator(type, period) {
-    const list = (state.inds = state.inds || []);
-    const p = Math.max(1, parseInt(period, 10) || IND_DEFAULT[type] || 14);
-    list.push({ id: Date.now(), type, p, m: 2, color: PALETTE[list.length % PALETTE.length] });
+  function indOptions() {
+    const opts = (g) =>
+      Object.keys(IND)
+        .filter((k) => IND[k].group === g)
+        .map((k) => `<option value="${k}">${IND_TITLES[k]}</option>`)
+        .join('');
+    return `<optgroup label="روی چارت">${opts('main')}</optgroup><optgroup label="پنجره جدا">${opts('sub')}</optgroup>`;
+  }
+
+  function addIndicator(type, text) {
+    const def = IND[type];
+    const nums = String(text || '')
+      .split(/[\s,،]+/)
+      .filter(Boolean)
+      .map(Number);
+    const params = def.params.map((dv, i) => {
+      const v = nums[i];
+      if (!(v > 0)) return dv;
+      return Number.isInteger(dv) ? Math.max(1, Math.round(v)) : v;
+    });
+    state.inds = state.inds || [];
+    state.inds.push({ id: Date.now(), type, params, visible: true });
     saveState();
     renderInds();
   }
@@ -644,16 +1410,25 @@
     for (const ind of state.inds || []) {
       const row = document.createElement('div');
       row.className = 'row';
+      const eye = document.createElement('input');
+      eye.type = 'checkbox';
+      eye.checked = ind.visible;
+      eye.title = 'نمایش/مخفی';
+      eye.onchange = () => {
+        ind.visible = eye.checked;
+        saveState();
+      };
       const color = document.createElement('input');
       color.type = 'color';
-      color.value = ind.color;
+      color.value = ind.color || defaultColor(ind.type);
       color.oninput = () => {
         ind.color = color.value;
         saveState();
       };
       const name = document.createElement('span');
       name.style.flex = '1';
-      name.textContent = IND_NAMES[ind.type] + (ind.type === 'vwap' ? '' : ' ' + ind.p);
+      name.title = IND_TITLES[ind.type];
+      name.textContent = IND[ind.type].name + (ind.params.length ? ' ' + ind.params.join(' ') : '');
       const del = document.createElement('button');
       del.className = 'sec';
       del.style.flex = '0 0 auto';
@@ -663,7 +1438,7 @@
         saveState();
         renderInds();
       };
-      row.append(color, name, del);
+      row.append(eye, color, name, del);
       ui.ilist.appendChild(row);
     }
   }
@@ -711,7 +1486,7 @@
         #tvch-panel button { background: #2962ff; color: #fff; border: 0; border-radius: 4px;
           padding: 6px; cursor: pointer; font: inherit; }
         #tvch-panel button.sec { background: #363a45; }
-        #tvch-panel select { background: #131722; color: inherit; border: 1px solid #434651; border-radius: 4px; padding: 4px; flex: 1; }
+        #tvch-panel input[type=text], #tvch-panel select { background: #131722; color: inherit; border: 1px solid #434651; border-radius: 4px; padding: 4px; flex: 1; }
         #tvch-panel .row { display: flex; gap: 6px; align-items: center; }
         #tvch-panel .row > button { flex: 1; }
         #tvch-panel .big { font-size: 15px; padding: 10px; }
@@ -733,8 +1508,8 @@
         <hr style="width:100%;border:0;border-top:1px solid #434651;margin:2px 0">
         <b>اندیکاتورها</b>
         <div class="row">
-          <select class="tvch-itype"><option value="sma">SMA</option><option value="ema">EMA</option><option value="bb">Bollinger</option><option value="vwap">VWAP</option><option value="rsi">RSI</option></select>
-          <input type="number" class="tvch-iperiod" min="1" value="20" style="width:56px">
+          <select class="tvch-itype">${indOptions()}</select>
+          <input type="text" class="tvch-iperiod" placeholder="پارامترها" style="width:70px">
           <button class="tvch-iadd" style="flex:0 0 auto">+</button>
         </div>
         <div class="tvch-ilist"></div>
@@ -748,12 +1523,15 @@
 
     const q = (s) => panel.querySelector(s);
     ui = { panel, info: q('.tvch-info'), status: q('.tvch-status'), ilist: q('.tvch-ilist'), isrc: q('.tvch-isrc'), ierr: q('.tvch-ierr') };
+    normInds();
     const itype = q('.tvch-itype');
     const iperiod = q('.tvch-iperiod');
     itype.onchange = () => {
-      iperiod.disabled = itype.value === 'vwap';
-      iperiod.value = IND_DEFAULT[itype.value] || 14;
+      const params = IND[itype.value].params;
+      iperiod.value = params.join(', ');
+      iperiod.disabled = !params.length;
     };
+    itype.onchange();
     q('.tvch-iadd').onclick = () => addIndicator(itype.value, iperiod.value);
     renderInds();
 
